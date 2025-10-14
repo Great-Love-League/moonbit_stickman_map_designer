@@ -212,14 +212,80 @@ canvas.moving {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.property-panel.collapsed {
+  width: 40px;
+}
+
+.property-panel.collapsed .panel-content-wrapper {
+  display: none;
+}
+
+.property-panel.collapsed .toggle-icon {
+  transform: rotate(180deg);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  position: relative;
+}
+
+.property-panel.collapsed .panel-header {
+  padding: 16px 8px;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .panel-title {
-  padding: 16px;
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.property-panel.collapsed .panel-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 14px;
+}
+
+.btn-toggle-panel {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  transition: color 0.2s, transform 0.3s ease;
+}
+
+.btn-toggle-panel:hover {
+  color: var(--primary-color);
+}
+
+.toggle-icon {
+  transition: transform 0.3s ease;
+}
+
+.property-panel.collapsed .toggle-icon {
+  transform: rotate(180deg);
+}
+
+.panel-content-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .property-content {
@@ -512,4 +578,50 @@ canvas.moving {
   padding: 6px 12px;
   font-size: 12px;
   width: 100%;
+}
+
+/* 物理预览控制栏 */
+.preview-controls {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.95);
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 1000;
+  border: 2px solid var(--success-color);
+}
+
+.preview-controls .btn-small {
+  width: auto;
+  min-width: 80px;
+}
+
+.preview-info {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--success-color);
+  margin-left: 8px;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.btn-danger {
+  background: var(--danger-color);
+  color: white;
+  border-color: var(--danger-color);
+}
+
+.btn-danger:hover {
+  background: #c0392b;
+  border-color: #c0392b;
 }

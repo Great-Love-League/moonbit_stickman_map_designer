@@ -229,6 +229,14 @@ class MapDesigner {
   private editingBody: Body | null = null;
   private draggedVertexIndex: number = -1;
   private vertexDragStart: Vector2 | null = null;
+  
+  // 物理预览模式
+  private isPreviewMode = false;
+  private box2dWorld: any = null;
+  private box2dBodies: Map<string, any> = new Map();
+  private box2dJoints: Map<string, any> = new Map();
+  private previewAnimationId: number | null = null;
+  private previewPaused = false;
 
   constructor(canvasId: string) {
     this.canvas = document.getElementById(canvasId) as HTMLCanvasElement;
@@ -267,6 +275,16 @@ class MapDesigner {
     document.getElementById('btn-load')?.addEventListener('click', () => this.loadMap());
     document.getElementById('btn-export')?.addEventListener('click', () => this.exportBox2D());
     
+    // 属性面板收起/展开
+    document.getElementById('btn-toggle-panel')?.addEventListener('click', () => this.togglePanel());
+    
+    // 物理预览
+    document.getElementById('btn-preview')?.addEventListener('click', () => this.togglePreview());
+    document.getElementById('btn-preview-play')?.addEventListener('click', () => this.resumePreview());
+    document.getElementById('btn-preview-pause')?.addEventListener('click', () => this.pausePreview());
+    document.getElementById('btn-preview-reset')?.addEventListener('click', () => this.resetPreview());
+    document.getElementById('btn-preview-exit')?.addEventListener('click', () => this.exitPreview());
+    
     // 撤销/重做按钮
     document.getElementById('btn-undo')?.addEventListener('click', () => this.undo());
     document.getElementById('btn-redo')?.addEventListener('click', () => this.redo());
@@ -287,6 +305,12 @@ class MapDesigner {
       } else if (e.ctrlKey && e.key === 'y') {
         e.preventDefault();
         this.redo();
+      } else if (e.key === ' ' && !this.isPreviewMode) {
+        e.preventDefault();
+        this.togglePreview();
+      } else if (e.key === 'Escape' && this.isPreviewMode) {
+        e.preventDefault();
+        this.exitPreview();
       }
     });
 
@@ -295,6 +319,10 @@ class MapDesigner {
   }
 
   private setupViewControls(): void {
+    const canvasWidthSlider = document.getElementById('canvas-width-slider') as HTMLInputElement;
+    const canvasWidthValue = document.getElementById('canvas-width-value') as HTMLSpanElement;
+    const canvasHeightSlider = document.getElementById('canvas-height-slider') as HTMLInputElement;
+    const canvasHeightValue = document.getElementById('canvas-height-value') as HTMLSpanElement;
     const ppmSlider = document.getElementById('ppm-slider') as HTMLInputElement;
     const ppmValue = document.getElementById('ppm-value') as HTMLSpanElement;
     const originXSlider = document.getElementById('origin-x-slider') as HTMLInputElement;
@@ -302,6 +330,24 @@ class MapDesigner {
     const originYSlider = document.getElementById('origin-y-slider') as HTMLInputElement;
     const originYValue = document.getElementById('origin-y-value') as HTMLSpanElement;
     const resetBtn = document.getElementById('btn-reset-view') as HTMLButtonElement;
+
+    // 画布宽度调整
+    canvasWidthSlider?.addEventListener('input', (e) => {
+      const value = parseInt((e.target as HTMLInputElement).value);
+      this.canvas.width = value;
+      if (canvasWidthValue) canvasWidthValue.textContent = value.toString();
+      this.render();
+      this.updateStatus('画布宽度已调整为 ' + value + 'px');
+    });
+
+    // 画布高度调整
+    canvasHeightSlider?.addEventListener('input', (e) => {
+      const value = parseInt((e.target as HTMLInputElement).value);
+      this.canvas.height = value;
+      if (canvasHeightValue) canvasHeightValue.textContent = value.toString();
+      this.render();
+      this.updateStatus('画布高度已调整为 ' + value + 'px');
+    });
 
     // PPM 缩放控制
     ppmSlider?.addEventListener('input', (e) => {
@@ -329,6 +375,15 @@ class MapDesigner {
 
     // 重置视图
     resetBtn?.addEventListener('click', () => {
+      // 重置画布大小
+      this.canvas.width = 1000;
+      this.canvas.height = 700;
+      if (canvasWidthSlider) canvasWidthSlider.value = '1000';
+      if (canvasWidthValue) canvasWidthValue.textContent = '1000';
+      if (canvasHeightSlider) canvasHeightSlider.value = '700';
+      if (canvasHeightValue) canvasHeightValue.textContent = '700';
+      
+      // 重置缩放和原点
       PPM = 20;
       ORIGIN_OFFSET_X = 0;
       ORIGIN_OFFSET_Y = 0;
@@ -341,7 +396,17 @@ class MapDesigner {
       if (originYValue) originYValue.textContent = '0.00';
       
       this.render();
+      this.updateStatus('视图已重置');
     });
+  }
+
+  private togglePanel(): void {
+    const panel = document.getElementById('property-panel');
+    if (panel) {
+      panel.classList.toggle('collapsed');
+      const isCollapsed = panel.classList.contains('collapsed');
+      this.updateStatus(isCollapsed ? '属性面板已收起' : '属性面板已展开');
+    }
   }
 
   private setTool(tool: Tool): void {
@@ -2150,6 +2215,281 @@ class MapDesigner {
         collide_connected: false
       }
     };
+  }
+
+  // ==================== 物理预览 ====================
+
+  private togglePreview(): void {
+    if (this.isPreviewMode) {
+      this.exitPreview();
+    } else {
+      this.startPreview();
+    }
+  }
+
+  private startPreview(): void {
+    // 检查 Box2D 是否加载
+    if (typeof (window as any).Box2D === 'undefined') {
+      alert('Box2D 物理引擎未加载！请检查 box2d.js 文件。');
+      return;
+    }
+
+    // 如果没有物体，提示用户
+    if (this.objects.length === 0) {
+      alert('场景中没有物体！请先创建一些物体。');
+      return;
+    }
+
+    console.log('开始物理预览...');
+    
+    this.isPreviewMode = true;
+    this.previewPaused = false;
+    
+    // 隐藏设计UI，显示预览UI
+    this.canvas.style.cursor = 'default';
+    document.getElementById('preview-controls')!.style.display = 'flex';
+    document.getElementById('property-panel')!.style.display = 'none';
+    
+    // 初始化 Box2D 世界
+    this.initBox2DWorld();
+    
+    // 开始动画循环
+    this.startPreviewAnimation();
+    
+    this.updateStatus('物理预览模式', `物体数: ${this.objects.length}`, '按 ESC 或点击退出');
+  }
+
+  private initBox2DWorld(): void {
+    const Box2D = (window as any).Box2D;
+    
+    // 创建世界（重力向下 9.8 m/s²）
+    const gravity = new Box2D.b2Vec2(0, -9.8);
+    this.box2dWorld = new Box2D.b2World(gravity, true);
+    
+    this.box2dBodies.clear();
+    this.box2dJoints.clear();
+    
+    // 创建所有刚体
+    for (const obj of this.objects) {
+      if (obj.type === 'body') {
+        const body = obj as Body;
+        const b2Body = this.createBox2DBody(body);
+        if (b2Body) {
+          this.box2dBodies.set(body.id, b2Body);
+        }
+      }
+    }
+    
+    // 创建所有关节
+    for (const obj of this.objects) {
+      if (obj.type === 'joint') {
+        const joint = obj as Joint;
+        const b2Joint = this.createBox2DJoint(joint);
+        if (b2Joint) {
+          this.box2dJoints.set(joint.id, b2Joint);
+        }
+      }
+    }
+    
+    console.log(`Box2D 世界已创建: ${this.box2dBodies.size} 个物体, ${this.box2dJoints.size} 个关节`);
+  }
+
+  private createBox2DBody(body: Body): any {
+    const Box2D = (window as any).Box2D;
+    
+    // 创建刚体定义
+    const bodyDef = new Box2D.b2BodyDef();
+    bodyDef.position.Set(body.position.x, body.position.y);
+    bodyDef.angle = body.angle;
+    
+    // 设置刚体类型
+    if (body.bodyType === 'static') {
+      bodyDef.type = Box2D.b2Body.b2_staticBody;
+    } else if (body.bodyType === 'dynamic') {
+      bodyDef.type = Box2D.b2Body.b2_dynamicBody;
+    } else if (body.bodyType === 'kinematic') {
+      bodyDef.type = Box2D.b2Body.b2_kinematicBody;
+    }
+    
+    bodyDef.linearDamping = body.linearDamping;
+    bodyDef.angularDamping = body.angularDamping;
+    bodyDef.fixedRotation = body.fixedRotation;
+    
+    // 创建刚体
+    const b2Body = this.box2dWorld.CreateBody(bodyDef);
+    
+    // 创建形状定义
+    const fixtureDef = new Box2D.b2FixtureDef();
+    fixtureDef.density = body.density;
+    fixtureDef.friction = body.friction;
+    fixtureDef.restitution = body.restitution;
+    
+    // 根据形状类型创建不同的 fixture
+    if (body.shapeType === 'box' && body.width && body.height) {
+      const shape = new Box2D.b2PolygonShape();
+      shape.SetAsBox(body.width / 2, body.height / 2);
+      fixtureDef.shape = shape;
+      b2Body.CreateFixture(fixtureDef);
+    } else if (body.shapeType === 'circle' && body.radius) {
+      const shape = new Box2D.b2CircleShape(body.radius);
+      fixtureDef.shape = shape;
+      b2Body.CreateFixture(fixtureDef);
+    } else if (body.shapeType === 'polygon' && body.vertices && body.vertices.length >= 3) {
+      const shape = new Box2D.b2PolygonShape();
+      const vertices = [];
+      
+      for (const v of body.vertices) {
+        vertices.push(new Box2D.b2Vec2(v.x, v.y));
+      }
+      
+      shape.SetAsArray(vertices, vertices.length);
+      fixtureDef.shape = shape;
+      b2Body.CreateFixture(fixtureDef);
+    }
+    
+    return b2Body;
+  }
+
+  private createBox2DJoint(joint: Joint): any {
+    const Box2D = (window as any).Box2D;
+    
+    const bodyA = this.box2dBodies.get(joint.bodyAId);
+    const bodyB = this.box2dBodies.get(joint.bodyBId);
+    
+    if (!bodyA || !bodyB) {
+      console.warn(`关节 ${joint.id} 的物体未找到`);
+      return null;
+    }
+    
+    if (joint.jointType === 'revolute') {
+      const jointDef = new Box2D.b2RevoluteJointDef();
+      
+      // 设置锚点（局部坐标）
+      jointDef.Initialize(
+        bodyA,
+        bodyB,
+        new Box2D.b2Vec2(
+          bodyA.GetPosition().x + joint.anchorALocal.x * Math.cos(bodyA.GetAngle()) - joint.anchorALocal.y * Math.sin(bodyA.GetAngle()),
+          bodyA.GetPosition().y + joint.anchorALocal.x * Math.sin(bodyA.GetAngle()) + joint.anchorALocal.y * Math.cos(bodyA.GetAngle())
+        )
+      );
+      
+      // 角度限制
+      if (joint.enableLimit) {
+        jointDef.enableLimit = true;
+        jointDef.lowerAngle = joint.lowerAngle || -Math.PI / 2;
+        jointDef.upperAngle = joint.upperAngle || Math.PI / 2;
+      }
+      
+      jointDef.collideConnected = false;
+      
+      return this.box2dWorld.CreateJoint(jointDef);
+    }
+    
+    return null;
+  }
+
+  private startPreviewAnimation(): void {
+    const animate = () => {
+      if (!this.isPreviewMode) return;
+      
+      if (!this.previewPaused) {
+        // 步进物理模拟
+        const timeStep = 1 / 60; // 60 FPS
+        const velocityIterations = 8;
+        const positionIterations = 3;
+        
+        this.box2dWorld.Step(timeStep, velocityIterations, positionIterations);
+        this.box2dWorld.ClearForces();
+        
+        // 同步 Box2D 状态到我们的对象
+        this.syncBox2DToObjects();
+      }
+      
+      // 渲染
+      this.render();
+      
+      // 继续动画
+      this.previewAnimationId = requestAnimationFrame(animate);
+    };
+    
+    animate();
+  }
+
+  private syncBox2DToObjects(): void {
+    for (const [id, b2Body] of this.box2dBodies.entries()) {
+      const body = this.objects.find(o => o.id === id) as Body;
+      if (body) {
+        const pos = b2Body.GetPosition();
+        body.position.x = pos.x;
+        body.position.y = pos.y;
+        body.angle = b2Body.GetAngle();
+      }
+    }
+  }
+
+  private pausePreview(): void {
+    this.previewPaused = true;
+    document.getElementById('btn-preview-play')!.style.display = 'inline-block';
+    document.getElementById('btn-preview-pause')!.style.display = 'none';
+  }
+
+  private resumePreview(): void {
+    this.previewPaused = false;
+    document.getElementById('btn-preview-play')!.style.display = 'none';
+    document.getElementById('btn-preview-pause')!.style.display = 'inline-block';
+  }
+
+  private resetPreview(): void {
+    // 停止当前模拟
+    if (this.previewAnimationId) {
+      cancelAnimationFrame(this.previewAnimationId);
+      this.previewAnimationId = null;
+    }
+    
+    // 销毁世界
+    if (this.box2dWorld) {
+      // Box2D 会自动清理
+      this.box2dWorld = null;
+    }
+    
+    // 重新加载原始对象状态（需要保存一份副本）
+    // 这里简单处理：重新初始化世界
+    this.initBox2DWorld();
+    this.previewPaused = false;
+    this.startPreviewAnimation();
+    
+    this.updateStatus('物理预览已重置');
+  }
+
+  private exitPreview(): void {
+    console.log('退出物理预览');
+    
+    this.isPreviewMode = false;
+    
+    // 停止动画
+    if (this.previewAnimationId) {
+      cancelAnimationFrame(this.previewAnimationId);
+      this.previewAnimationId = null;
+    }
+    
+    // 销毁 Box2D 世界
+    if (this.box2dWorld) {
+      this.box2dWorld = null;
+    }
+    
+    this.box2dBodies.clear();
+    this.box2dJoints.clear();
+    
+    // 恢复UI
+    document.getElementById('preview-controls')!.style.display = 'none';
+    document.getElementById('property-panel')!.style.display = 'flex';
+    this.canvas.style.cursor = 'crosshair';
+    
+    // 重新渲染（使用原始状态）
+    this.render();
+    
+    this.updateStatus('已退出预览模式');
   }
 }
 

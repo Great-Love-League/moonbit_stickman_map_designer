@@ -94,7 +94,7 @@
           <button id="btn-load" class="btn" title="加载">加载</button>
           <input type="file" id="file-input" accept=".json" style="display: none;" />
           <button id="btn-export" class="btn btn-primary" title="导出Box2D JSON">导出</button>
-          <button id="btn-demo" class="btn btn-success" title="运行Box2D演示">演示</button>
+          <button id="btn-preview" class="btn btn-success" title="物理预览 (Space)">▶ 预览</button>
         </div>
       </div>
 
@@ -103,7 +103,15 @@
         <!-- 左侧画布区 -->
         <div class="canvas-container">
           <canvas id="design-canvas" width="1000" height="700"></canvas>
-          <canvas id="demo-canvas" width="1000" height="700" style="display: none;"></canvas>
+          
+          <!-- 物理预览控制栏 -->
+          <div id="preview-controls" class="preview-controls" style="display: none;">
+            <button id="btn-preview-play" class="btn btn-small">▶ 播放</button>
+            <button id="btn-preview-pause" class="btn btn-small" style="display: none;">⏸ 暂停</button>
+            <button id="btn-preview-reset" class="btn btn-small">🔄 重置</button>
+            <button id="btn-preview-exit" class="btn btn-small btn-danger">✕ 退出预览</button>
+            <span class="preview-info">物理引擎运行中...</span>
+          </div>
           
           <!-- 状态栏 -->
           <div id="status-bar" class="status-bar">
@@ -116,11 +124,31 @@
 
         <!-- 右侧属性面板 -->
         <div id="property-panel" class="property-panel">
-          <h3 class="panel-title">属性面板</h3>
+          <div class="panel-header">
+            <h3 class="panel-title">属性面板</h3>
+            <button id="btn-toggle-panel" class="btn-toggle-panel" title="收起/展开面板">
+              <svg width="16" height="16" viewBox="0 0 16 16" class="toggle-icon">
+                <path d="M6 4 L10 8 L6 12" fill="none" stroke="currentColor" stroke-width="2"/>
+              </svg>
+            </button>
+          </div>
           
+          <div class="panel-content-wrapper">
           <!-- 视图设置 -->
           <div class="view-settings">
             <div class="view-settings-title">🔧 视图设置</div>
+            
+            <div class="property-field">
+              <label>画布宽度 (px): <span id="canvas-width-value">1000</span></label>
+              <input type="range" id="canvas-width-slider" min="600" max="2000" value="1000" step="50">
+              <div class="hint">600-2000 像素</div>
+            </div>
+            
+            <div class="property-field">
+              <label>画布高度 (px): <span id="canvas-height-value">700</span></label>
+              <input type="range" id="canvas-height-slider" min="400" max="1500" value="700" step="50">
+              <div class="hint">400-1500 像素</div>
+            </div>
             
             <div class="property-field">
               <label>缩放 (PPM): <span id="ppm-value">20</span></label>
@@ -144,10 +172,20 @@
           <div id="property-content" class="property-content">
             <p class="placeholder">请选择一个对象以编辑其属性</p>
           </div>
+          </div>
         </div>
       </div>
     </div>
 
+    <!-- Box2D 物理引擎 -->
+    <script type="text/javascript" src="/box2d-js/lib/jquery-1.4.2.min.js" ></script>
+    <script type="text/javascript">
+      jQuery.noConflict();
+      Object.extend = jQuery.extend;
+    </script>
+    <script src="/box2d-js/lib/jquery.svg.min.js"></script>
+    <script src="/box2d-js/lib/box2d.js"></script>
+    
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
