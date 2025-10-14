@@ -1,0 +1,17 @@
+/* 应用内部样式 - 补充主样式 */
+
+.property-field input[type="number"]::-webkit-inner-spin-button,
+.property-field input[type="number"]::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#demo-canvas {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+}
