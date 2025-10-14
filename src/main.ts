@@ -223,6 +223,12 @@ class MapDesigner {
   private panStartOriginY = 0;
   private panStartMouseX = 0;
   private panStartMouseY = 0;
+  
+  // 顶点编辑模式
+  private isEditingVertices = false;
+  private editingBody: Body | null = null;
+  private draggedVertexIndex: number = -1;
+  private vertexDragStart: Vector2 | null = null;
 
   constructor(canvasId: string) {
     this.canvas = document.getElementById(canvasId) as HTMLCanvasElement;
@@ -428,7 +434,36 @@ class MapDesigner {
     
     const pos = this.getMousePos(e);
     this.mousePos = pos; // 保存当前鼠标位置（Box2D坐标）
-    this.updateStatus(`工具: ${this.currentTool}`, `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`);
+    
+    // 更新状态栏
+    if (this.isEditingVertices) {
+      this.updateStatus(
+        `顶点编辑模式 (拖动顶点修改 | 双击/点击空白处退出)`,
+        `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`
+      );
+    } else {
+      this.updateStatus(`工具: ${this.currentTool}`, `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`);
+    }
+
+    // 顶点拖动
+    if (this.draggedVertexIndex >= 0 && this.editingBody?.vertices) {
+      const body = this.editingBody;
+      
+      // 将世界坐标转换为物体局部坐标
+      const cos = Math.cos(-body.angle); // 注意这里是逆旋转
+      const sin = Math.sin(-body.angle);
+      const dx = pos.x - body.position.x;
+      const dy = pos.y - body.position.y;
+      const localX = dx * cos - dy * sin;
+      const localY = dx * sin + dy * cos;
+      
+      // 更新顶点位置
+      body.vertices![this.draggedVertexIndex].x = localX;
+      body.vertices![this.draggedVertexIndex].y = localY;
+      
+      this.render();
+      return;
+    }
 
     // 拖动锚点
     if (this.draggingAnchor) {
@@ -521,6 +556,42 @@ class MapDesigner {
       this.anchorStartPos = null;
       this.updatePropertyPanel(); // 更新属性面板显示新位置
     }
+    
+    // 处理顶点拖动结束
+    if (this.draggedVertexIndex >= 0 && this.vertexDragStart && this.editingBody?.vertices) {
+      const body = this.editingBody;
+      
+      // 创建旧顶点数组（拖动前的位置）
+      const oldVertices = JSON.parse(JSON.stringify(body.vertices));
+      oldVertices[this.draggedVertexIndex].x = this.vertexDragStart.x;
+      oldVertices[this.draggedVertexIndex].y = this.vertexDragStart.y;
+      
+      // 新顶点数组就是当前的 body.vertices（已经在 onMouseMove 中更新了）
+      const newVertices = JSON.parse(JSON.stringify(body.vertices));
+      
+      // 只有真正移动了才记录命令
+      const moved = Math.abs(newVertices[this.draggedVertexIndex].x - oldVertices[this.draggedVertexIndex].x) > 0.01 ||
+                    Math.abs(newVertices[this.draggedVertexIndex].y - oldVertices[this.draggedVertexIndex].y) > 0.01;
+      
+      if (moved) {
+        const cmd = new ModifyPropertyCommand(
+          body,
+          'vertices',
+          oldVertices,
+          newVertices,
+          () => {
+            this.render();
+            this.updatePropertyPanel();
+          }
+        );
+        this.commandHistory.execute(cmd);
+        this.updateUndoRedoButtons();
+      }
+      
+      this.draggedVertexIndex = -1;
+      this.vertexDragStart = null;
+      this.updatePropertyPanel();
+    }
 
     // 处理移动命令
     if (this.isDragging && this.moveStartPos && this.selectedObject && this.selectedObject.type === 'body') {
@@ -550,9 +621,40 @@ class MapDesigner {
     this.moveStartPos = null;
   }
 
-  private onDoubleClick(_e: MouseEvent): void {
+  private onDoubleClick(e: MouseEvent): void {
+    // 多边形绘制工具：双击完成多边形
     if (this.currentTool === 'polygon' && this.polygonVertices.length >= 3) {
+      // 移除最后一个重复添加的点（双击的第二次点击添加的）
+      this.polygonVertices.pop();
       this.finalizePolygon();
+      return;
+    }
+    
+    // 选择工具：双击多边形进入顶点编辑模式
+    if (this.currentTool === 'select') {
+      const rect = this.canvas.getBoundingClientRect();
+      const scaleX = this.canvas.width / rect.width;
+      const scaleY = this.canvas.height / rect.height;
+      const canvasX = (e.clientX - rect.left) * scaleX;
+      const canvasY = (e.clientY - rect.top) * scaleY;
+      const worldPos = canvasToBox2D(canvasX, canvasY, this.canvas.width, this.canvas.height);
+      
+      // 如果已经在编辑模式，退出编辑模式
+      if (this.isEditingVertices) {
+        this.exitVertexEditMode();
+        return;
+      }
+      
+      // 查找点击的物体
+      const obj = this.hitTest(worldPos.x, worldPos.y);
+      
+      // 如果点击的是多边形，进入顶点编辑模式
+      if (obj && obj.type === 'body') {
+        const body = obj as Body;
+        if (body.shapeType === 'polygon' && body.vertices) {
+          this.enterVertexEditMode(body);
+        }
+      }
     }
   }
 
@@ -620,6 +722,20 @@ class MapDesigner {
   }
 
   private handleSelectMouseDown(pos: Vector2): void {
+    // 顶点编辑模式：尝试选中顶点
+    if (this.isEditingVertices && this.editingBody) {
+      const vertexIndex = this.hitTestVertex(this.editingBody, pos.x, pos.y);
+      if (vertexIndex >= 0) {
+        this.draggedVertexIndex = vertexIndex;
+        const vertex = this.editingBody.vertices![vertexIndex];
+        this.vertexDragStart = { x: vertex.x, y: vertex.y };
+        console.log(`开始拖动顶点 ${vertexIndex}`);
+        return;
+      }
+      // 如果没有点击顶点，退出编辑模式
+      this.exitVertexEditMode();
+    }
+    
     // 首先检测是否点击了关节的锚点
     const anchorHit = this.hitTestAnchor(pos.x, pos.y);
     if (anchorHit) {
@@ -647,7 +763,6 @@ class MapDesigner {
     this.updatePropertyPanel();
     this.render();
   }
-
   private handleShapeMouseDown(pos: Vector2): void {
     if (this.currentTool === 'rect') {
       // 创建 1m x 1m 的矩形（Box2D 单位）
@@ -900,6 +1015,52 @@ class MapDesigner {
     return null;
   }
 
+  // ==================== 顶点编辑模式 ====================
+  
+  private enterVertexEditMode(body: Body): void {
+    this.isEditingVertices = true;
+    this.editingBody = body;
+    this.selectedObject = body;
+    console.log(`进入顶点编辑模式: ${body.id}`);
+    this.updateStatus('顶点编辑模式', '拖动顶点修改位置', '双击或点击空白处退出');
+    this.render();
+  }
+  
+  private exitVertexEditMode(): void {
+    this.isEditingVertices = false;
+    this.editingBody = null;
+    this.draggedVertexIndex = -1;
+    this.vertexDragStart = null;
+    console.log('退出顶点编辑模式');
+    this.updateStatus('退出顶点编辑模式');
+    this.render();
+  }
+  
+  private hitTestVertex(body: Body, worldX: number, worldY: number): number {
+    if (!body.vertices) return -1;
+    
+    const hitRadius = 0.3; // 顶点点击半径（米）
+    
+    for (let i = 0; i < body.vertices.length; i++) {
+      const vertex = body.vertices[i];
+      // 将本地顶点坐标转换为世界坐标
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      const worldVx = body.position.x + vertex.x * cos - vertex.y * sin;
+      const worldVy = body.position.y + vertex.x * sin + vertex.y * cos;
+      
+      const dist = Math.sqrt(
+        (worldX - worldVx) ** 2 + (worldY - worldVy) ** 2
+      );
+      
+      if (dist <= hitRadius) {
+        return i;
+      }
+    }
+    
+    return -1;
+  }
+
   private deleteSelected(): void {
     if (this.selectedObject) {
       const objToDelete = this.selectedObject;
@@ -1144,6 +1305,40 @@ class MapDesigner {
 
     ctx.restore();
     
+    // 顶点编辑模式：绘制可拖动的顶点控制点
+    if (this.isEditingVertices && this.editingBody === body && body.vertices) {
+      for (let i = 0; i < body.vertices.length; i++) {
+        const vertex = body.vertices[i];
+        
+        // 将本地顶点坐标转换为世界坐标
+        const cos = Math.cos(body.angle);
+        const sin = Math.sin(body.angle);
+        const worldX = body.position.x + vertex.x * cos - vertex.y * sin;
+        const worldY = body.position.y + vertex.x * sin + vertex.y * cos;
+        
+        // 转换为画布坐标
+        const canvasVertex = box2DToCanvas(worldX, worldY, width, height);
+        
+        // 绘制顶点控制点
+        ctx.save();
+        ctx.fillStyle = this.draggedVertexIndex === i ? '#e74c3c' : '#3498db';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(canvasVertex.x, canvasVertex.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        // 绘制顶点索引
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(i.toString(), canvasVertex.x, canvasVertex.y);
+        ctx.restore();
+      }
+    }
+    
     // 绘制 ID 标签（在Canvas坐标系中）
     if (isSelected) {
       ctx.fillStyle = '#333';
@@ -1251,6 +1446,55 @@ class MapDesigner {
   }
 
   private generateBodyProperties(body: Body): string {
+    // 生成形状尺寸编辑部分
+    let shapePropertiesHTML = '';
+    
+    if (body.shapeType === 'box' && body.width !== undefined && body.height !== undefined) {
+      shapePropertiesHTML = `
+        <div class="property-group">
+          <div class="property-group-title">矩形尺寸 (单位：米)</div>
+          <div class="property-field">
+            <label>宽度 (Width)</label>
+            <input type="number" id="prop-width" class="body-prop" value="${body.width.toFixed(2)}" step="0.1" min="0.1">
+          </div>
+          <div class="property-field">
+            <label>高度 (Height)</label>
+            <input type="number" id="prop-height" class="body-prop" value="${body.height.toFixed(2)}" step="0.1" min="0.1">
+          </div>
+        </div>
+      `;
+    } else if (body.shapeType === 'circle' && body.radius !== undefined) {
+      shapePropertiesHTML = `
+        <div class="property-group">
+          <div class="property-group-title">圆形尺寸 (单位：米)</div>
+          <div class="property-field">
+            <label>半径 (Radius)</label>
+            <input type="number" id="prop-radius" class="body-prop" value="${body.radius.toFixed(2)}" step="0.1" min="0.1">
+          </div>
+        </div>
+      `;
+    } else if (body.shapeType === 'polygon' && body.vertices && body.vertices.length > 0) {
+      const verticesHTML = body.vertices.map((v, i) => `
+        <div class="vertex-field">
+          <label>顶点 ${i + 1}</label>
+          <div class="input-group">
+            <input type="number" id="prop-vertex-${i}-x" class="body-prop vertex-input" 
+                   value="${v.x.toFixed(2)}" step="0.1" placeholder="X">
+            <input type="number" id="prop-vertex-${i}-y" class="body-prop vertex-input" 
+                   value="${v.y.toFixed(2)}" step="0.1" placeholder="Y">
+          </div>
+        </div>
+      `).join('');
+      
+      shapePropertiesHTML = `
+        <div class="property-group">
+          <div class="property-group-title">多边形顶点 (单位：米)</div>
+          ${verticesHTML}
+          <div class="hint">提示：顶点坐标相对于物体中心</div>
+        </div>
+      `;
+    }
+    
     return `
       <div class="object-info">
         <div class="object-info-row">
@@ -1262,6 +1506,24 @@ class MapDesigner {
           <span class="object-info-value">刚体 (${body.shapeType})</span>
         </div>
       </div>
+
+      <div class="property-group">
+        <div class="property-group-title">位置坐标 (单位：米)</div>
+        <div class="property-field">
+          <label>X 坐标</label>
+          <input type="number" id="prop-position-x" class="body-prop" value="${body.position.x.toFixed(2)}" step="0.1">
+        </div>
+        <div class="property-field">
+          <label>Y 坐标</label>
+          <input type="number" id="prop-position-y" class="body-prop" value="${body.position.y.toFixed(2)}" step="0.1">
+        </div>
+        <div class="property-field">
+          <label>旋转角度 (度)</label>
+          <input type="number" id="prop-angle" class="body-prop" value="${(body.angle * 180 / Math.PI).toFixed(2)}" step="1">
+        </div>
+      </div>
+
+      ${shapePropertiesHTML}
 
       <div class="property-group">
         <div class="property-group-title">刚体类型</div>
@@ -1416,6 +1678,151 @@ class MapDesigner {
       });
     };
 
+    // 位置坐标 X
+    const posXInput = document.getElementById('prop-position-x') as HTMLInputElement;
+    if (posXInput && this.selectedObject && this.selectedObject.type === 'body') {
+      posXInput.addEventListener('input', () => {
+        if (this.selectedObject && this.selectedObject.type === 'body') {
+          const body = this.selectedObject as Body;
+          const oldX = body.position.x;
+          const newX = parseFloat(posXInput.value);
+          
+          if (oldX !== newX) {
+            const cmd = new ModifyPropertyCommand(
+              body,
+              'position.x',
+              oldX,
+              newX,
+              () => {
+                body.position.x = newX;
+                this.render();
+                this.updatePropertyPanel();
+              }
+            );
+            this.commandHistory.execute(cmd);
+            this.updateUndoRedoButtons();
+          }
+        }
+      });
+    }
+
+    // 位置坐标 Y
+    const posYInput = document.getElementById('prop-position-y') as HTMLInputElement;
+    if (posYInput && this.selectedObject && this.selectedObject.type === 'body') {
+      posYInput.addEventListener('input', () => {
+        if (this.selectedObject && this.selectedObject.type === 'body') {
+          const body = this.selectedObject as Body;
+          const oldY = body.position.y;
+          const newY = parseFloat(posYInput.value);
+          
+          if (oldY !== newY) {
+            const cmd = new ModifyPropertyCommand(
+              body,
+              'position.y',
+              oldY,
+              newY,
+              () => {
+                body.position.y = newY;
+                this.render();
+                this.updatePropertyPanel();
+              }
+            );
+            this.commandHistory.execute(cmd);
+            this.updateUndoRedoButtons();
+          }
+        }
+      });
+    }
+
+    // 旋转角度
+    const angleInput = document.getElementById('prop-angle') as HTMLInputElement;
+    if (angleInput && this.selectedObject && this.selectedObject.type === 'body') {
+      angleInput.addEventListener('input', () => {
+        if (this.selectedObject && this.selectedObject.type === 'body') {
+          const body = this.selectedObject as Body;
+          const oldAngle = body.angle;
+          const newAngle = parseFloat(angleInput.value) * Math.PI / 180; // 度转弧度
+          
+          if (oldAngle !== newAngle) {
+            const cmd = new ModifyPropertyCommand(
+              body,
+              'angle',
+              oldAngle,
+              newAngle,
+              () => {
+                this.render();
+                this.updatePropertyPanel();
+              }
+            );
+            this.commandHistory.execute(cmd);
+            this.updateUndoRedoButtons();
+          }
+        }
+      });
+    }
+
+    // 形状尺寸属性
+    updateProp('prop-width', 'width');
+    updateProp('prop-height', 'height');
+    updateProp('prop-radius', 'radius');
+    
+    // 多边形顶点编辑
+    if (this.selectedObject && this.selectedObject.type === 'body') {
+      const body = this.selectedObject as Body;
+      if (body.shapeType === 'polygon' && body.vertices) {
+        body.vertices.forEach((_, i) => {
+          // X 坐标
+          const xInput = document.getElementById(`prop-vertex-${i}-x`) as HTMLInputElement;
+          if (xInput) {
+            xInput.addEventListener('input', () => {
+              const newX = parseFloat(xInput.value);
+              const oldVertices = JSON.parse(JSON.stringify(body.vertices));
+              const newVertices = JSON.parse(JSON.stringify(body.vertices));
+              newVertices[i].x = newX;
+              
+              const cmd = new ModifyPropertyCommand(
+                body,
+                'vertices',
+                oldVertices,
+                newVertices,
+                () => {
+                  this.render();
+                  this.updatePropertyPanel();
+                }
+              );
+              this.commandHistory.execute(cmd);
+              this.updateUndoRedoButtons();
+            });
+          }
+          
+          // Y 坐标
+          const yInput = document.getElementById(`prop-vertex-${i}-y`) as HTMLInputElement;
+          if (yInput) {
+            yInput.addEventListener('input', () => {
+              const newY = parseFloat(yInput.value);
+              const oldVertices = JSON.parse(JSON.stringify(body.vertices));
+              const newVertices = JSON.parse(JSON.stringify(body.vertices));
+              newVertices[i].y = newY;
+              
+              const cmd = new ModifyPropertyCommand(
+                body,
+                'vertices',
+                oldVertices,
+                newVertices,
+                () => {
+                  this.render();
+                  this.updatePropertyPanel();
+                }
+              );
+              this.commandHistory.execute(cmd);
+              this.updateUndoRedoButtons();
+            });
+          }
+        });
+      }
+    }
+
+    // 物理属性
     updateProp('prop-bodyType', 'bodyType');
     updateProp('prop-density', 'density');
     updateProp('prop-friction', 'friction');
