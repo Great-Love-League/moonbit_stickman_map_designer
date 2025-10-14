@@ -2,7 +2,7 @@
  * 工具函数
  */
 
-import { PIXEL_TO_METER, METER_TO_PIXEL } from './constants';
+import { PIXEL_TO_METER} from './constants';
 import type { Vector2 } from './types';
 
 /**

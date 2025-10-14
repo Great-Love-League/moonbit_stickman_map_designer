@@ -122,10 +122,10 @@ function box2DToCanvasScale(box2dValue: number): number {
   return box2dValue * PPM;
 }
 
-function canvasToBox2DScale(pixelValue: number): number {
-  // Canvas 像素转 Box2D 标量（长度）
-  return pixelValue / PPM;
-}
+// function canvasToBox2DScale(pixelValue: number): number {
+//   // Canvas 像素转 Box2D 标量（长度）
+//   return pixelValue / PPM;
+// }
 
 function distance(x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1;
