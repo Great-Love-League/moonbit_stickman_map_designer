@@ -968,7 +968,7 @@ class MapDesigner {
     
     // Y 轴标记（每 5米）
     for (let y = Math.ceil(worldMinY); y <= Math.floor(worldMaxY); y++) {
-      if (y % 5 === 0 && y > 0) {
+      if (y % 5 === 0) {
         const canvasPos = box2DToCanvas(worldMinX, y, width, height);
         ctx.fillText(`${y}m`, 5, canvasPos.y - 2);
       }
