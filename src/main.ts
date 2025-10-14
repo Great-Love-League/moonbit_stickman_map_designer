@@ -58,6 +58,10 @@ interface Joint {
   enableLimit?: boolean;
   lowerAngle?: number;
   upperAngle?: number;
+  enableMotor?: boolean;
+  motorSpeed?: number;
+  maxMotorTorque?: number;
+  collideConnected?: boolean;
 }
 
 type MapObject = Body | Joint;
@@ -237,6 +241,12 @@ class MapDesigner {
   private box2dJoints: Map<string, any> = new Map();
   private previewAnimationId: number | null = null;
   private previewPaused = false;
+  private previewOriginalState: Array<{id: string, position: Vector2, angle: number}> = [];
+  
+  // 预览模式的坐标系快照（用于 Box2D 同步）
+  private previewPPM = 20;
+  private previewOriginOffsetX = 0;
+  private previewOriginOffsetY = 0;
 
   constructor(canvasId: string) {
     this.canvas = document.getElementById(canvasId) as HTMLCanvasElement;
@@ -297,6 +307,16 @@ class MapDesigner {
 
     // 键盘快捷键
     document.addEventListener('keydown', (e) => {
+      // 预览模式下只允许 ESC 键退出
+      if (this.isPreviewMode) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.exitPreview();
+        }
+        return; // 其他按键在预览模式下无效
+      }
+      
+      // 普通模式下的快捷键
       if (e.key === 'Delete' && this.selectedObject) {
         this.deleteSelected();
       } else if (e.ctrlKey && e.key === 'z') {
@@ -305,12 +325,9 @@ class MapDesigner {
       } else if (e.ctrlKey && e.key === 'y') {
         e.preventDefault();
         this.redo();
-      } else if (e.key === ' ' && !this.isPreviewMode) {
+      } else if (e.key === ' ') {
         e.preventDefault();
         this.togglePreview();
-      } else if (e.key === 'Escape' && this.isPreviewMode) {
-        e.preventDefault();
-        this.exitPreview();
       }
     });
 
@@ -442,6 +459,11 @@ class MapDesigner {
   }
 
   private onMouseDown(e: MouseEvent): void {
+    // 预览模式下禁用所有鼠标操作（除了中键平移）
+    if (this.isPreviewMode && e.button !== 1) {
+      return;
+    }
+    
     // 中键拖动画布
     if (e.button === 1) {
       e.preventDefault();
@@ -494,6 +516,13 @@ class MapDesigner {
       // 更新滑块显示
       this.updateViewControlsUI();
       this.render();
+      return;
+    }
+    
+    // 预览模式下只更新状态栏坐标
+    if (this.isPreviewMode) {
+      const pos = this.getMousePos(e);
+      this.updateStatus('物理预览模式', `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`, '按 ESC 或点击退出');
       return;
     }
     
@@ -583,7 +612,12 @@ class MapDesigner {
     // 结束画布平移
     if (this.isPanning) {
       this.isPanning = false;
-      this.canvas.style.cursor = 'default';
+      this.canvas.style.cursor = this.isPreviewMode ? 'default' : 'crosshair';
+      return;
+    }
+    
+    // 预览模式下禁用所有编辑操作
+    if (this.isPreviewMode) {
       return;
     }
     
@@ -687,6 +721,11 @@ class MapDesigner {
   }
 
   private onDoubleClick(e: MouseEvent): void {
+    // 预览模式下禁用双击操作
+    if (this.isPreviewMode) {
+      return;
+    }
+    
     // 多边形绘制工具：双击完成多边形
     if (this.currentTool === 'polygon' && this.polygonVertices.length >= 3) {
       // 移除最后一个重复添加的点（双击的第二次点击添加的）
@@ -755,7 +794,13 @@ class MapDesigner {
     
     // 更新滑块显示
     this.updateViewControlsUI();
-    this.render();
+    
+    // 如果在预览模式，需要重建 Box2D 世界以适应新的缩放
+    if (this.isPreviewMode) {
+      this.rebuildBox2DWorldWithNewScale();
+    } else {
+      this.render();
+    }
   }
 
   private updateViewControlsUI(): void {
@@ -848,19 +893,29 @@ class MapDesigner {
     const body = this.hitTest(pos.x, pos.y);
     
     if (!body || body.type !== 'body') {
-      this.updateStatus('', '', '请点击一个刚体');
+      this.updateStatus('关节工具', '', '请点击一个刚体作为第一个连接点');
       return;
     }
 
     if (!this.jointBodyA) {
+      // 选择第一个物体
       this.jointBodyA = body as Body;
       this.jointAnchorA = pos;
-      this.updateStatus('', '', '请选择第二个刚体');
+      this.updateStatus('关节工具', '', `已选择物体 ${this.jointBodyA.id.substring(0, 8)}..., 请选择第二个刚体`);
     } else {
-      this.createJoint(this.jointBodyA, body as Body, this.jointAnchorA!, pos);
+      const bodyB = body as Body;
+      
+      // 检查是否选择了同一个物体
+      if (this.jointBodyA.id === bodyB.id) {
+        this.updateStatus('关节工具', '', '❌ 不能连接同一个物体！请选择另一个刚体');
+        return;
+      }
+      
+      // 创建关节
+      this.createJoint(this.jointBodyA, bodyB, this.jointAnchorA!, pos);
       this.jointBodyA = null;
       this.jointAnchorA = null;
-      this.updateStatus('', '', '关节已创建');
+      this.updateStatus('关节工具', '', '✓ 关节已创建！（默认允许碰撞，可在属性面板修改）');
     }
   }
 
@@ -976,6 +1031,10 @@ class MapDesigner {
     joint.enableLimit = false;
     joint.lowerAngle = -Math.PI / 2;
     joint.upperAngle = Math.PI / 2;
+    joint.enableMotor = false;
+    joint.motorSpeed = 0;
+    joint.maxMotorTorque = 1000;
+    joint.collideConnected = true;  // 默认允许碰撞（更符合现实物理）
 
     const cmd = new AddObjectCommand(
       this.objects,
@@ -1299,6 +1358,51 @@ class MapDesigner {
       ctx.font = '11px monospace';
       ctx.fillText(`(${this.mousePos.x.toFixed(2)}m, ${this.mousePos.y.toFixed(2)}m)`, 
                    mouseCanvas.x + 10, mouseCanvas.y - 10);
+    }
+    
+    // 绘制关节工具的视觉反馈
+    if (this.currentTool === 'revoluteJoint' && this.jointBodyA && this.jointAnchorA) {
+      const width = this.canvas.width;
+      const height = this.canvas.height;
+      
+      // 高亮第一个选中的物体
+      ctx.save();
+      ctx.strokeStyle = '#f39c12';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([5, 5]);
+      
+      const bodyCenter = box2DToCanvas(this.jointBodyA.position.x, this.jointBodyA.position.y, width, height);
+      if (this.jointBodyA.shapeType === 'box' && this.jointBodyA.width && this.jointBodyA.height) {
+        const w = this.jointBodyA.width * PPM;
+        const h = this.jointBodyA.height * PPM;
+        ctx.strokeRect(bodyCenter.x - w / 2 - 5, bodyCenter.y - h / 2 - 5, w + 10, h + 10);
+      } else if (this.jointBodyA.shapeType === 'circle' && this.jointBodyA.radius) {
+        const r = this.jointBodyA.radius * PPM;
+        ctx.beginPath();
+        ctx.arc(bodyCenter.x, bodyCenter.y, r + 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      
+      ctx.setLineDash([]);
+      
+      // 绘制第一个锚点
+      const anchorA = box2DToCanvas(this.jointAnchorA.x, this.jointAnchorA.y, width, height);
+      ctx.fillStyle = '#f39c12';
+      ctx.beginPath();
+      ctx.arc(anchorA.x, anchorA.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // 从锚点到鼠标位置画虚线
+      const mouseCanvas = box2DToCanvas(this.mousePos.x, this.mousePos.y, width, height);
+      ctx.strokeStyle = '#f39c12';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(anchorA.x, anchorA.y);
+      ctx.lineTo(mouseCanvas.x, mouseCanvas.y);
+      ctx.stroke();
+      
+      ctx.restore();
     }
   }
 
@@ -1707,6 +1811,33 @@ class MapDesigner {
         </div>
       </div>
 
+      <div class="property-group">
+        <div class="property-group-title">马达控制</div>
+        <div class="property-field property-field-inline">
+          <input type="checkbox" id="prop-enableMotor" class="joint-prop" ${joint.enableMotor ? 'checked' : ''}>
+          <label>启用马达</label>
+        </div>
+        <div class="property-field">
+          <label>马达速度 (rad/s)</label>
+          <input type="number" id="prop-motorSpeed" class="joint-prop" value="${(joint.motorSpeed || 0).toFixed(2)}" step="0.1">
+          <div class="hint">正值：逆时针旋转 | 负值：顺时针旋转</div>
+        </div>
+        <div class="property-field">
+          <label>最大扭矩</label>
+          <input type="number" id="prop-maxMotorTorque" class="joint-prop" value="${joint.maxMotorTorque || 1000}" step="100" min="0">
+          <div class="hint">扭矩越大，马达力量越强</div>
+        </div>
+      </div>
+
+      <div class="property-group">
+        <div class="property-group-title">碰撞设置</div>
+        <div class="property-field property-field-inline">
+          <input type="checkbox" id="prop-collideConnected" class="joint-prop" ${joint.collideConnected ? 'checked' : ''}>
+          <label>允许连接物体碰撞</label>
+        </div>
+        <div class="hint">勾选：连接的物体会发生碰撞（如人体关节）<br>不勾选：连接的物体穿透彼此（适合特殊效果）</div>
+      </div>
+
       <div class="btn-group">
         <button id="btn-delete-obj" class="btn">删除对象</button>
       </div>
@@ -1977,6 +2108,14 @@ class MapDesigner {
     updateProp('prop-enableLimit', 'enableLimit', true);
     updateProp('prop-lowerAngle', 'lowerAngle', false, true);
     updateProp('prop-upperAngle', 'upperAngle', false, true);
+    
+    // 马达属性
+    updateProp('prop-enableMotor', 'enableMotor', true);
+    updateProp('prop-motorSpeed', 'motorSpeed', false);
+    updateProp('prop-maxMotorTorque', 'maxMotorTorque', false);
+    
+    // 其他属性
+    updateProp('prop-collideConnected', 'collideConnected', true);
 
     document.getElementById('btn-delete-obj')?.addEventListener('click', () => this.deleteSelected());
   }
@@ -2219,6 +2358,27 @@ class MapDesigner {
 
   // ==================== 物理预览 ====================
 
+  private disableToolbar(disabled: boolean): void {
+    // 禁用/启用所有工具按钮
+    document.querySelectorAll('.tool-btn').forEach(btn => {
+      (btn as HTMLButtonElement).disabled = disabled;
+      if (disabled) {
+        btn.classList.add('disabled');
+      } else {
+        btn.classList.remove('disabled');
+      }
+    });
+    
+    // 禁用/启用文件操作按钮
+    const fileButtons = ['btn-new', 'btn-save', 'btn-load', 'btn-export', 'btn-undo', 'btn-redo'];
+    fileButtons.forEach(id => {
+      const btn = document.getElementById(id) as HTMLButtonElement;
+      if (btn) {
+        btn.disabled = disabled;
+      }
+    });
+  }
+
   private togglePreview(): void {
     if (this.isPreviewMode) {
       this.exitPreview();
@@ -2228,9 +2388,11 @@ class MapDesigner {
   }
 
   private startPreview(): void {
-    // 检查 Box2D 是否加载
-    if (typeof (window as any).Box2D === 'undefined') {
-      alert('Box2D 物理引擎未加载！请检查 box2d.js 文件。');
+    // 检查 Box2D 是否加载（旧版 Box2D Flash API）
+    if (typeof (window as any).b2World === 'undefined') {
+      alert('Box2D 物理引擎未加载！\n\n请确认：\n1. public/box2d-js/lib/box2d.js 文件存在\n2. 刷新页面重新加载\n3. 查看控制台是否有加载错误');
+      console.error('Box2D 加载检查失败 - b2World 未定义');
+      console.log('可用的全局对象:', Object.keys(window).filter(k => k.includes('b2')));
       return;
     }
 
@@ -2241,14 +2403,41 @@ class MapDesigner {
     }
 
     console.log('开始物理预览...');
+    console.log('Box2D 版本: Flash 移植版');
     
     this.isPreviewMode = true;
     this.previewPaused = false;
+    
+    // 保存所有物体的原始状态（用于重置）
+    this.previewOriginalState = [];
+    for (const obj of this.objects) {
+      if (obj.type === 'body') {
+        const body = obj as Body;
+        this.previewOriginalState.push({
+          id: body.id,
+          position: { x: body.position.x, y: body.position.y },
+          angle: body.angle
+        });
+      }
+    }
     
     // 隐藏设计UI，显示预览UI
     this.canvas.style.cursor = 'default';
     document.getElementById('preview-controls')!.style.display = 'flex';
     document.getElementById('property-panel')!.style.display = 'none';
+    
+    // 禁用所有工具栏按钮和文件操作按钮
+    this.disableToolbar(true);
+    
+    // 设置预览按钮初始状态（播放中，显示暂停按钮）
+    document.getElementById('btn-preview-play')!.style.display = 'none';
+    document.getElementById('btn-preview-pause')!.style.display = 'inline-block';
+    
+    // 保存当前的坐标系参数（用于 Box2D 同步）
+    this.previewPPM = PPM;
+    this.previewOriginOffsetX = ORIGIN_OFFSET_X;
+    this.previewOriginOffsetY = ORIGIN_OFFSET_Y;
+    console.log(`保存坐标系快照: PPM=${this.previewPPM}, OriginX=${this.previewOriginOffsetX.toFixed(2)}, OriginY=${this.previewOriginOffsetY.toFixed(2)}`);
     
     // 初始化 Box2D 世界
     this.initBox2DWorld();
@@ -2260,132 +2449,264 @@ class MapDesigner {
   }
 
   private initBox2DWorld(): void {
-    const Box2D = (window as any).Box2D;
+    console.log('=== 初始化 Box2D 世界 ===');
+    console.log(`场景对象总数: ${this.objects.length}`);
     
-    // 创建世界（重力向下 9.8 m/s²）
-    const gravity = new Box2D.b2Vec2(0, -9.8);
-    this.box2dWorld = new Box2D.b2World(gravity, true);
-    
+    // 首先清空旧的映射（如果有）
     this.box2dBodies.clear();
     this.box2dJoints.clear();
+    console.log('已清空旧的 Box2D 映射');
+    
+    // 使用旧版 Box2D Flash API
+    const b2AABB = (window as any).b2AABB;
+    const b2World = (window as any).b2World;
+    const b2Vec2 = (window as any).b2Vec2;
+    
+    // 创建世界边界（AABB）
+    const worldAABB = new b2AABB();
+    worldAABB.minVertex.Set(-1000, -1000);
+    worldAABB.maxVertex.Set(1000, 1000);
+    
+    // 创建重力（Y 向下为正，像素单位）
+    // 注意：我们的坐标系 Y 向上，Box2D 旧版 Y 向下
+    const gravity = new b2Vec2(0, 300); // 约 300 pixels/s² 向下
+    const doSleep = true;
+    
+    // 创建世界
+    this.box2dWorld = new b2World(worldAABB, gravity, doSleep);
+    console.log('Box2D 世界已创建');
+    
+    // 统计物体和关节数量
+    const bodies = this.objects.filter(o => o.type === 'body');
+    const joints = this.objects.filter(o => o.type === 'joint');
+    console.log(`准备创建: ${bodies.length} 个物体, ${joints.length} 个关节`);
     
     // 创建所有刚体
+    let bodySuccessCount = 0;
+    let bodyFailCount = 0;
     for (const obj of this.objects) {
       if (obj.type === 'body') {
         const body = obj as Body;
         const b2Body = this.createBox2DBody(body);
         if (b2Body) {
           this.box2dBodies.set(body.id, b2Body);
+          bodySuccessCount++;
+        } else {
+          bodyFailCount++;
         }
       }
     }
     
+    console.log(`物体创建完成: ${bodySuccessCount} 成功, ${bodyFailCount} 失败`);
+    console.log(`当前 box2dBodies Map 大小: ${this.box2dBodies.size}`);
+    console.log(`box2dBodies 的 keys:`, Array.from(this.box2dBodies.keys()));
+    
     // 创建所有关节
+    let jointSuccessCount = 0;
+    let jointFailCount = 0;
     for (const obj of this.objects) {
       if (obj.type === 'joint') {
         const joint = obj as Joint;
         const b2Joint = this.createBox2DJoint(joint);
         if (b2Joint) {
           this.box2dJoints.set(joint.id, b2Joint);
+          jointSuccessCount++;
+        } else {
+          jointFailCount++;
         }
       }
     }
     
-    console.log(`Box2D 世界已创建: ${this.box2dBodies.size} 个物体, ${this.box2dJoints.size} 个关节`);
+    console.log(`关节创建完成: ${jointSuccessCount} 成功, ${jointFailCount} 失败`);
+    console.log(`=== Box2D 世界初始化完成 ===`);
+    console.log(`最终结果: ${this.box2dBodies.size} 个物体, ${this.box2dJoints.size} 个关节`);
   }
 
   private createBox2DBody(body: Body): any {
-    const Box2D = (window as any).Box2D;
+    console.log(`创建 Box2D Body: id=${body.id}, type=${body.bodyType}, shape=${body.shapeType}`);
     
-    // 创建刚体定义
-    const bodyDef = new Box2D.b2BodyDef();
-    bodyDef.position.Set(body.position.x, body.position.y);
-    bodyDef.angle = body.angle;
+    // 使用旧版 Box2D Flash API
+    const b2BodyDef = (window as any).b2BodyDef;
+    const b2BoxDef = (window as any).b2BoxDef;
+    const b2CircleDef = (window as any).b2CircleDef;
+    const b2PolyDef = (window as any).b2PolyDef;
     
-    // 设置刚体类型
-    if (body.bodyType === 'static') {
-      bodyDef.type = Box2D.b2Body.b2_staticBody;
-    } else if (body.bodyType === 'dynamic') {
-      bodyDef.type = Box2D.b2Body.b2_dynamicBody;
-    } else if (body.bodyType === 'kinematic') {
-      bodyDef.type = Box2D.b2Body.b2_kinematicBody;
+    const bodyDef = new b2BodyDef();
+    
+    // 创建形状定义
+    let shapeDef: any = null;
+    
+    if (body.shapeType === 'box' && body.width && body.height) {
+      shapeDef = new b2BoxDef();
+      // extents 是半宽和半高（像素）
+      // 重要：使用保存的 PPM 参数
+      const halfWidth = body.width * this.previewPPM / 2;
+      const halfHeight = body.height * this.previewPPM / 2;
+      shapeDef.extents.Set(halfWidth, halfHeight);
+      console.log(`  - 矩形: 半宽=${halfWidth.toFixed(2)}px, 半高=${halfHeight.toFixed(2)}px [使用保存的 PPM=${this.previewPPM}]`);
+    } else if (body.shapeType === 'circle' && body.radius) {
+      shapeDef = new b2CircleDef();
+      // 重要：使用保存的 PPM 参数
+      shapeDef.radius = body.radius * this.previewPPM;
+      console.log(`  - 圆形: 半径=${shapeDef.radius.toFixed(2)}px [使用保存的 PPM=${this.previewPPM}]`);
+    } else if (body.shapeType === 'polygon' && body.vertices && body.vertices.length >= 3) {
+      shapeDef = new b2PolyDef();
+      shapeDef.vertexCount = body.vertices.length;
+      
+      console.log(`  - 准备创建多边形: ${body.vertices.length} 个顶点`);
+      
+      // 多边形顶点（相对于物体中心）
+      // 重要：使用保存的 PPM 参数
+      // 注意：旧版 Box2D 需要使用 .Set() 方法设置顶点！
+      for (let i = 0; i < body.vertices.length; i++) {
+        const v = body.vertices[i];
+        
+        const vx = v.x * this.previewPPM;
+        const vy = -v.y * this.previewPPM;  // Y 轴翻转（我们的 Y 向上，Box2D 旧版 Y 向下）
+        
+        // 使用 Set() 方法（旧版 API 要求）
+        shapeDef.vertices[i].Set(vx, vy);
+        console.log(`    顶点[${i}]: 局部(${v.x.toFixed(2)}, ${v.y.toFixed(2)}) -> Box2D(${vx.toFixed(2)}, ${vy.toFixed(2)})`);
+      }
+      
+      console.log(`  - 多边形顶点已设置 [使用保存的 PPM=${this.previewPPM}]`);
     }
     
-    bodyDef.linearDamping = body.linearDamping;
-    bodyDef.angularDamping = body.angularDamping;
-    bodyDef.fixedRotation = body.fixedRotation;
+    if (!shapeDef) {
+      console.error(`❌ 无法创建形状: ${body.shapeType}, width=${body.width}, height=${body.height}, radius=${body.radius}`);
+      return null;
+    }
+    
+    // 设置物理属性
+    shapeDef.density = body.bodyType === 'static' ? 0 : body.density;
+    shapeDef.friction = body.friction;
+    shapeDef.restitution = body.restitution;
+    console.log(`  - 物理属性: density=${shapeDef.density}, friction=${shapeDef.friction}, restitution=${shapeDef.restitution}`);
+    
+    // 添加形状到 body 定义（旧版必须先添加形状）
+    bodyDef.AddShape(shapeDef);
+    
+    // 设置位置（像素单位，Y 轴翻转）
+    // 重要：使用保存的坐标系参数，确保创建和同步使用相同的参数
+    const canvasX = (body.position.x - this.previewOriginOffsetX) * this.previewPPM + this.canvas.width / 2;
+    const canvasY = -(body.position.y - this.previewOriginOffsetY) * this.previewPPM + this.canvas.height / 2;
+    bodyDef.position.Set(canvasX, canvasY);
+    console.log(`  - 位置: 世界(${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)}) -> 画布(${canvasX.toFixed(0)}, ${canvasY.toFixed(0)}) [使用保存的坐标系]`);
+    
+    // 设置旋转（旧版使用 rotation 属性）
+    bodyDef.rotation = -body.angle; // Y 轴翻转导致角度也要反向
+    console.log(`  - 角度: ${(body.angle * 180 / Math.PI).toFixed(1)}° -> Box2D ${(bodyDef.rotation * 180 / Math.PI).toFixed(1)}°`);
     
     // 创建刚体
     const b2Body = this.box2dWorld.CreateBody(bodyDef);
     
-    // 创建形状定义
-    const fixtureDef = new Box2D.b2FixtureDef();
-    fixtureDef.density = body.density;
-    fixtureDef.friction = body.friction;
-    fixtureDef.restitution = body.restitution;
-    
-    // 根据形状类型创建不同的 fixture
-    if (body.shapeType === 'box' && body.width && body.height) {
-      const shape = new Box2D.b2PolygonShape();
-      shape.SetAsBox(body.width / 2, body.height / 2);
-      fixtureDef.shape = shape;
-      b2Body.CreateFixture(fixtureDef);
-    } else if (body.shapeType === 'circle' && body.radius) {
-      const shape = new Box2D.b2CircleShape(body.radius);
-      fixtureDef.shape = shape;
-      b2Body.CreateFixture(fixtureDef);
-    } else if (body.shapeType === 'polygon' && body.vertices && body.vertices.length >= 3) {
-      const shape = new Box2D.b2PolygonShape();
-      const vertices = [];
-      
-      for (const v of body.vertices) {
-        vertices.push(new Box2D.b2Vec2(v.x, v.y));
-      }
-      
-      shape.SetAsArray(vertices, vertices.length);
-      fixtureDef.shape = shape;
-      b2Body.CreateFixture(fixtureDef);
+    if (b2Body) {
+      console.log(`✅ Body ${body.id} 创建成功`);
+    } else {
+      console.error(`❌ Body ${body.id} 创建失败！CreateBody 返回 null`);
+      console.error(`  - 详细信息: type=${body.bodyType}, shape=${body.shapeType}`);
+      console.error(`  - bodyDef:`, bodyDef);
+      console.error(`  - shapeDef:`, shapeDef);
     }
     
     return b2Body;
   }
 
   private createBox2DJoint(joint: Joint): any {
-    const Box2D = (window as any).Box2D;
+    console.log(`创建 Box2D Joint: id=${joint.id}, type=${joint.jointType}, bodyA=${joint.bodyAId}, bodyB=${joint.bodyBId}`);
+    
+    // 使用旧版 Box2D Flash API
+    const b2RevoluteJointDef = (window as any).b2RevoluteJointDef;
     
     const bodyA = this.box2dBodies.get(joint.bodyAId);
     const bodyB = this.box2dBodies.get(joint.bodyBId);
     
-    if (!bodyA || !bodyB) {
-      console.warn(`关节 ${joint.id} 的物体未找到`);
+    if (!bodyA) {
+      console.error(`❌ 关节 ${joint.id} 的 bodyA (${joint.bodyAId}) 未找到！`);
+      console.log(`  - 可用的 bodies:`, Array.from(this.box2dBodies.keys()));
       return null;
     }
     
+    if (!bodyB) {
+      console.error(`❌ 关节 ${joint.id} 的 bodyB (${joint.bodyBId}) 未找到！`);
+      console.log(`  - 可用的 bodies:`, Array.from(this.box2dBodies.keys()));
+      return null;
+    }
+    
+    console.log(`  - bodyA 和 bodyB 都已找到`);
+    
     if (joint.jointType === 'revolute') {
-      const jointDef = new Box2D.b2RevoluteJointDef();
+      // 找到对应的 Body 对象
+      const bodyAObj = this.objects.find(o => o.id === joint.bodyAId) as Body;
+      const bodyBObj = this.objects.find(o => o.id === joint.bodyBId) as Body;
       
-      // 设置锚点（局部坐标）
-      jointDef.Initialize(
-        bodyA,
-        bodyB,
-        new Box2D.b2Vec2(
-          bodyA.GetPosition().x + joint.anchorALocal.x * Math.cos(bodyA.GetAngle()) - joint.anchorALocal.y * Math.sin(bodyA.GetAngle()),
-          bodyA.GetPosition().y + joint.anchorALocal.x * Math.sin(bodyA.GetAngle()) + joint.anchorALocal.y * Math.cos(bodyA.GetAngle())
-        )
+      if (!bodyAObj || !bodyBObj) {
+        console.error(`❌ 关节 ${joint.id} 对应的 Body 对象未找到！bodyAObj=${!!bodyAObj}, bodyBObj=${!!bodyBObj}`);
+        return null;
+      }
+      
+      console.log(`  - Body 对象: bodyA pos=(${bodyAObj.position.x.toFixed(2)}, ${bodyAObj.position.y.toFixed(2)}), bodyB pos=(${bodyBObj.position.x.toFixed(2)}, ${bodyBObj.position.y.toFixed(2)})`);
+      
+      // 创建旋转关节定义
+      const jointDef = new b2RevoluteJointDef();
+      jointDef.body1 = bodyA;
+      jointDef.body2 = bodyB;
+      
+      // 将局部锚点转换为世界坐标（我们的坐标系，米）
+      const anchorAWorld = localToWorld(
+        joint.anchorALocal.x,
+        joint.anchorALocal.y,
+        bodyAObj.position.x,
+        bodyAObj.position.y,
+        bodyAObj.angle
       );
       
-      // 角度限制
+      // 将世界坐标转换为画布坐标（像素）
+      // 重要：使用保存的坐标系参数，确保与物体创建时使用相同的参数
+      const anchorCanvasX = (anchorAWorld.x - this.previewOriginOffsetX) * this.previewPPM + this.canvas.width / 2;
+      const anchorCanvasY = -(anchorAWorld.y - this.previewOriginOffsetY) * this.previewPPM + this.canvas.height / 2;
+      
+      // 设置锚点（旧版使用 anchorPoint，画布坐标）
+      jointDef.anchorPoint.Set(anchorCanvasX, anchorCanvasY);
+      
+      console.log(`  - 锚点: 局部(${joint.anchorALocal.x.toFixed(2)}, ${joint.anchorALocal.y.toFixed(2)}) -> 世界(${anchorAWorld.x.toFixed(2)}, ${anchorAWorld.y.toFixed(2)}) -> 画布(${anchorCanvasX.toFixed(0)}, ${anchorCanvasY.toFixed(0)}) [使用保存的坐标系]`);      
+      // 角度限制（旧版 API 完全支持！）
       if (joint.enableLimit) {
         jointDef.enableLimit = true;
         jointDef.lowerAngle = joint.lowerAngle || -Math.PI / 2;
         jointDef.upperAngle = joint.upperAngle || Math.PI / 2;
+        console.log(`  - 角度限制: ${(jointDef.lowerAngle * 180 / Math.PI).toFixed(0)}° 到 ${(jointDef.upperAngle * 180 / Math.PI).toFixed(0)}°`);
       }
       
-      jointDef.collideConnected = false;
+      // 马达功能（旧版 API 完全支持！）
+      if (joint.enableMotor) {
+        jointDef.enableMotor = true;
+        jointDef.motorSpeed = joint.motorSpeed || 0;
+        jointDef.motorTorque = joint.maxMotorTorque || 1000; // 旧版使用 motorTorque 而非 maxMotorTorque
+        console.log(`  - 马达: 速度=${jointDef.motorSpeed.toFixed(2)} rad/s, 扭矩=${jointDef.motorTorque}`);
+      }
       
-      return this.box2dWorld.CreateJoint(jointDef);
+      // 碰撞连接
+      jointDef.collideConnected = joint.collideConnected || false;
+      console.log(`  - 碰撞连接: ${jointDef.collideConnected}`);
+      
+      // 创建关节
+      try {
+        const b2Joint = this.box2dWorld.CreateJoint(jointDef);
+        if (b2Joint) {
+          console.log(`✅ Joint ${joint.id} 创建成功`);
+          return b2Joint;
+        } else {
+          console.error(`❌ Joint ${joint.id} 创建失败！CreateJoint 返回 null`);
+          return null;
+        }
+      } catch (error) {
+        console.error(`❌ Joint ${joint.id} 创建异常:`, error);
+        return null;
+      }
     }
     
+    console.warn(`⚠️ 不支持的关节类型: ${joint.jointType}`);
     return null;
   }
 
@@ -2394,13 +2715,9 @@ class MapDesigner {
       if (!this.isPreviewMode) return;
       
       if (!this.previewPaused) {
-        // 步进物理模拟
-        const timeStep = 1 / 60; // 60 FPS
-        const velocityIterations = 8;
-        const positionIterations = 3;
-        
-        this.box2dWorld.Step(timeStep, velocityIterations, positionIterations);
-        this.box2dWorld.ClearForces();
+        // 步进物理模拟（旧版 API）
+        // 参数：timeStep, iterations（旧版只有一个迭代参数）
+        this.box2dWorld.Step(1 / 60, 10);
         
         // 同步 Box2D 状态到我们的对象
         this.syncBox2DToObjects();
@@ -2420,10 +2737,23 @@ class MapDesigner {
     for (const [id, b2Body] of this.box2dBodies.entries()) {
       const body = this.objects.find(o => o.id === id) as Body;
       if (body) {
-        const pos = b2Body.GetPosition();
-        body.position.x = pos.x;
-        body.position.y = pos.y;
-        body.angle = b2Body.GetAngle();
+        // 旧版 API：直接访问 m_position 和 m_rotation
+        const pos = b2Body.m_position;
+        const angle = b2Body.m_rotation;
+        
+        // 从画布坐标转回世界坐标（像素 -> 米，Y 轴翻转）
+        // 重要：使用保存的坐标系参数，而不是当前的参数
+        // 这样即使用户在预览时拖动或缩放视图，Box2D 同步也是正确的
+        const canvasX = pos.x;
+        const canvasY = pos.y;
+        
+        // 使用保存的坐标系参数进行转换
+        const worldX = (canvasX - this.canvas.width / 2) / this.previewPPM + this.previewOriginOffsetX;
+        const worldY = -(canvasY - this.canvas.height / 2) / this.previewPPM + this.previewOriginOffsetY;
+        
+        body.position.x = worldX;
+        body.position.y = worldY;
+        body.angle = -angle; // Y 轴翻转导致角度反向
       }
     }
   }
@@ -2440,25 +2770,124 @@ class MapDesigner {
     document.getElementById('btn-preview-pause')!.style.display = 'inline-block';
   }
 
+  private rebuildBox2DWorldWithNewScale(): void {
+    console.log('=== 缩放变化，重建 Box2D 世界 ===');
+    console.log(`新的 PPM: ${PPM}, 新的 ORIGIN_OFFSET: (${ORIGIN_OFFSET_X.toFixed(2)}, ${ORIGIN_OFFSET_Y.toFixed(2)})`);
+    
+    // 暂停模拟（不停止动画循环）
+    const wasPaused = this.previewPaused;
+    this.previewPaused = true;
+    
+    // 保存当前所有物体的物理状态（位置、角度、速度）
+    const currentStates: Array<{
+      id: string;
+      position: Vector2;
+      angle: number;
+      linearVelocity?: { x: number; y: number };
+      angularVelocity?: number;
+    }> = [];
+    
+    for (const [id, b2Body] of this.box2dBodies.entries()) {
+      const body = this.objects.find(o => o.id === id) as Body;
+      if (body) {
+        // 保存当前的位置和角度（已经从 Box2D 同步到 objects）
+        const state: any = {
+          id: body.id,
+          position: { x: body.position.x, y: body.position.y },
+          angle: body.angle
+        };
+        
+        // 保存速度（如果是动态物体）
+        if (body.bodyType === 'dynamic' && b2Body.m_linearVelocity) {
+          state.linearVelocity = {
+            x: b2Body.m_linearVelocity.x,
+            y: b2Body.m_linearVelocity.y
+          };
+          state.angularVelocity = b2Body.m_angularVelocity || 0;
+        }
+        
+        currentStates.push(state);
+      }
+    }
+    
+    console.log(`已保存 ${currentStates.length} 个物体的当前状态`);
+    
+    // 销毁旧的 Box2D 世界
+    if (this.box2dWorld) {
+      this.box2dWorld = null;
+    }
+    
+    // 更新坐标系快照为新的值
+    this.previewPPM = PPM;
+    this.previewOriginOffsetX = ORIGIN_OFFSET_X;
+    this.previewOriginOffsetY = ORIGIN_OFFSET_Y;
+    console.log(`更新坐标系快照: PPM=${this.previewPPM}, OriginX=${this.previewOriginOffsetX.toFixed(2)}, OriginY=${this.previewOriginOffsetY.toFixed(2)}`);
+    
+    // 重新初始化 Box2D 世界（使用新的坐标系参数）
+    this.initBox2DWorld();
+    
+    // 恢复物体的速度（如果有）
+    for (const state of currentStates) {
+      const b2Body = this.box2dBodies.get(state.id);
+      if (b2Body && state.linearVelocity) {
+        // 速度单位是画布像素/秒，不需要根据 PPM 缩放
+        b2Body.m_linearVelocity.Set(state.linearVelocity.x, state.linearVelocity.y);
+        b2Body.m_angularVelocity = state.angularVelocity || 0;
+        console.log(`恢复物体 ${state.id} 的速度: (${state.linearVelocity.x.toFixed(2)}, ${state.linearVelocity.y.toFixed(2)}), 角速度: ${state.angularVelocity}`);
+      }
+    }
+    
+    // 恢复暂停状态
+    this.previewPaused = wasPaused;
+    
+    // 渲染新的状态
+    this.render();
+    
+    console.log('=== Box2D 世界重建完成 ===');
+  }
+
   private resetPreview(): void {
+    console.log('=== 重置物理预览 ===');
+    
     // 停止当前模拟
     if (this.previewAnimationId) {
       cancelAnimationFrame(this.previewAnimationId);
       this.previewAnimationId = null;
+      console.log('动画循环已停止');
     }
     
-    // 销毁世界
+    // 销毁旧的 Box2D 世界
     if (this.box2dWorld) {
-      // Box2D 会自动清理
-      this.box2dWorld = null;
+      console.log('销毁旧的 Box2D 世界');
+      this.box2dWorld = null; // 让 GC 处理
     }
     
-    // 重新加载原始对象状态（需要保存一份副本）
-    // 这里简单处理：重新初始化世界
+    console.log('恢复物体到原始状态...');
+    // 恢复所有物体的原始状态
+    let restoredCount = 0;
+    for (const savedState of this.previewOriginalState) {
+      const body = this.objects.find(o => o.id === savedState.id) as Body;
+      if (body) {
+        body.position.x = savedState.position.x;
+        body.position.y = savedState.position.y;
+        body.angle = savedState.angle;
+        restoredCount++;
+      }
+    }
+    console.log(`已恢复 ${restoredCount} 个物体的状态`);
+    
+    // 重新初始化世界（会清空并重建 box2dBodies 和 box2dJoints）
     this.initBox2DWorld();
     this.previewPaused = false;
+    
+    // 重置按钮状态为播放中
+    document.getElementById('btn-preview-play')!.style.display = 'none';
+    document.getElementById('btn-preview-pause')!.style.display = 'inline-block';
+    
+    // 重新启动动画循环
     this.startPreviewAnimation();
     
+    console.log('=== 重置完成 ===');
     this.updateStatus('物理预览已重置');
   }
 
@@ -2481,10 +2910,30 @@ class MapDesigner {
     this.box2dBodies.clear();
     this.box2dJoints.clear();
     
+    // 恢复所有物体的原始状态
+    for (const savedState of this.previewOriginalState) {
+      const body = this.objects.find(o => o.id === savedState.id) as Body;
+      if (body) {
+        body.position.x = savedState.position.x;
+        body.position.y = savedState.position.y;
+        body.angle = savedState.angle;
+      }
+    }
+    
+    // 清空保存的状态
+    this.previewOriginalState = [];
+    
     // 恢复UI
     document.getElementById('preview-controls')!.style.display = 'none';
     document.getElementById('property-panel')!.style.display = 'flex';
     this.canvas.style.cursor = 'crosshair';
+    
+    // 重新启用所有工具栏按钮和文件操作按钮
+    this.disableToolbar(false);
+    
+    // 重置按钮状态（为下次预览做准备）
+    document.getElementById('btn-preview-play')!.style.display = 'none';
+    document.getElementById('btn-preview-pause')!.style.display = 'none';
     
     // 重新渲染（使用原始状态）
     this.render();

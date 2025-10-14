@@ -98,6 +98,13 @@ body {
   border-color: var(--primary-color);
 }
 
+.tool-btn:disabled,
+.tool-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .tool-btn svg {
   width: 24px;
   height: 24px;
@@ -117,6 +124,11 @@ body {
 .btn:hover {
   background: var(--bg-color);
   border-color: var(--primary-color);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-primary {
