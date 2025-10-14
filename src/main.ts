@@ -535,6 +535,19 @@ class MapDesigner {
         `顶点编辑模式 (拖动顶点修改 | 双击/点击空白处退出)`,
         `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`
       );
+    } else if (this.currentTool === 'polygon' && this.polygonVertices.length > 0) {
+      // 多边形创建模式的特殊提示
+      const vertexCount = this.polygonVertices.length;
+      const maxVertices = 8; // Box2D 物理引擎限制
+      let hint = '';
+      if (vertexCount < 3) {
+        hint = `已有 ${vertexCount} 个顶点，至少需要 3 个`;
+      } else if (vertexCount >= maxVertices) {
+        hint = `已达到物理引擎限制 (${maxVertices}个)，请点击起始点或双击完成`;
+      } else {
+        hint = `已有 ${vertexCount} 个顶点（最多${maxVertices}个），双击或点击起始点完成`;
+      }
+      this.updateStatus(`多边形工具`, `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`, hint);
     } else {
       this.updateStatus(`工具: ${this.currentTool}`, `坐标: (${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m)`);
     }
@@ -885,6 +898,28 @@ class MapDesigner {
   }
 
   private handlePolygonMouseDown(pos: Vector2): void {
+    // 检查是否点击了起始点（闭合多边形）
+    if (this.polygonVertices.length >= 3) {
+      const firstVertex = this.polygonVertices[0];
+      const distance = Math.sqrt(
+        Math.pow(pos.x - firstVertex.x, 2) + 
+        Math.pow(pos.y - firstVertex.y, 2)
+      );
+      
+      // 如果距离起始点小于 0.5m，则闭合多边形
+      if (distance < 0.5) {
+        this.finalizePolygon();
+        return;
+      }
+    }
+    
+    // 检查 Box2D 物理引擎的顶点数限制
+    const maxVertices = 8;
+    if (this.polygonVertices.length >= maxVertices) {
+      this.updateStatus('多边形工具', '', `⚠️ Box2D 物理引擎最多支持 ${maxVertices} 个顶点，请点击起始点或双击完成创建`);
+      return;
+    }
+    
     this.polygonVertices.push({ x: pos.x, y: pos.y });
     this.render();
   }
@@ -970,10 +1005,13 @@ class MapDesigner {
       const centerX = this.polygonVertices.reduce((sum, v) => sum + v.x, 0) / this.polygonVertices.length;
       const centerY = this.polygonVertices.reduce((sum, v) => sum + v.y, 0) / this.polygonVertices.length;
       
-      const localVertices = this.polygonVertices.map(v => ({
+      let localVertices = this.polygonVertices.map(v => ({
         x: v.x - centerX,
         y: v.y - centerY
       }));
+      
+      // 确保顶点是逆时针顺序（Box2D 要求）
+      localVertices = this.ensureCounterClockwise(localVertices);
 
       const body = this.createBody('polygon', centerX, centerY);
       body.vertices = localVertices;
@@ -989,6 +1027,28 @@ class MapDesigner {
       this.updateUndoRedoButtons();
       this.render();
     }
+  }
+  
+  // 确保多边形顶点是逆时针顺序（Box2D 要求）
+  private ensureCounterClockwise(vertices: Vector2[]): Vector2[] {
+    if (vertices.length < 3) return vertices;
+    
+    // 计算多边形的有向面积（使用叉积）
+    let area = 0;
+    for (let i = 0; i < vertices.length; i++) {
+      const j = (i + 1) % vertices.length;
+      area += vertices[i].x * vertices[j].y;
+      area -= vertices[j].x * vertices[i].y;
+    }
+    
+    // 如果面积为负，说明是顺时针，需要反转
+    // 注意：在我们的坐标系中（Y向上），正面积表示逆时针
+    if (area < 0) {
+      console.log('多边形顶点是顺时针，反转为逆时针');
+      return vertices.reverse();
+    }
+    
+    return vertices;
   }
 
   private createBody(shapeType: ShapeType, x: number, y: number, width?: number, height?: number): Body {
@@ -1293,6 +1353,7 @@ class MapDesigner {
       ctx.fillStyle = '#3498db';
       ctx.lineWidth = 2;
       
+      // 绘制已有的边
       ctx.beginPath();
       const firstCanvas = box2DToCanvas(this.polygonVertices[0].x, this.polygonVertices[0].y, width, height);
       ctx.moveTo(firstCanvas.x, firstCanvas.y);
@@ -1302,11 +1363,29 @@ class MapDesigner {
       }
       ctx.stroke();
 
-      this.polygonVertices.forEach(v => {
+      // 绘制所有顶点
+      this.polygonVertices.forEach((v, index) => {
         const canvasPos = box2DToCanvas(v.x, v.y, width, height);
         ctx.beginPath();
-        ctx.arc(canvasPos.x, canvasPos.y, 5, 0, Math.PI * 2);
-        ctx.fill();
+        
+        // 起始点用特殊样式（更大，绿色边框）
+        if (index === 0 && this.polygonVertices.length >= 3) {
+          ctx.fillStyle = '#3498db';
+          ctx.strokeStyle = '#27ae60'; // 绿色边框
+          ctx.lineWidth = 3;
+          ctx.arc(canvasPos.x, canvasPos.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          
+          // 绘制提示文字
+          ctx.fillStyle = '#27ae60';
+          ctx.font = 'bold 11px monospace';
+          ctx.fillText('点击闭合', canvasPos.x + 12, canvasPos.y - 8);
+        } else {
+          ctx.fillStyle = '#3498db';
+          ctx.arc(canvasPos.x, canvasPos.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
       });
       
       // 从最后一个顶点到鼠标位置画虚线
@@ -1322,6 +1401,38 @@ class MapDesigner {
         ctx.lineTo(mouseCanvas.x, mouseCanvas.y);
         ctx.stroke();
         ctx.setLineDash([]);
+        
+        // 如果鼠标靠近起始点，显示闭合预览
+        if (this.polygonVertices.length >= 3) {
+          const firstVertex = this.polygonVertices[0];
+          const distance = Math.sqrt(
+            Math.pow(this.mousePos.x - firstVertex.x, 2) + 
+            Math.pow(this.mousePos.y - firstVertex.y, 2)
+          );
+          
+          if (distance < 0.5) {
+            // 绘制闭合边的预览（虚线）
+            ctx.setLineDash([5, 5]);
+            ctx.strokeStyle = '#27ae60';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(lastCanvas.x, lastCanvas.y);
+            ctx.lineTo(firstCanvas.x, firstCanvas.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
+      
+      // 显示顶点数量提示
+      if (this.polygonVertices.length > 0) {
+        const maxVertices = 8; // Box2D 物理引擎限制
+        const text = this.polygonVertices.length >= maxVertices
+          ? `顶点: ${this.polygonVertices.length}/${maxVertices} (已达物理引擎限制，双击或点击起始点完成)`
+          : `顶点: ${this.polygonVertices.length}/${maxVertices} (至少3个，双击或点击起始点完成)`;
+        ctx.fillStyle = this.polygonVertices.length >= maxVertices ? '#e74c3c' : '#2c3e50';
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText(text, 10, height - 10);
       }
     }
     
@@ -2550,6 +2661,14 @@ class MapDesigner {
       shapeDef.radius = body.radius * this.previewPPM;
       console.log(`  - 圆形: 半径=${shapeDef.radius.toFixed(2)}px [使用保存的 PPM=${this.previewPPM}]`);
     } else if (body.shapeType === 'polygon' && body.vertices && body.vertices.length >= 3) {
+      // Box2D 旧版对多边形顶点数有限制（最多 8 个）
+      const maxVertices = 8;
+      if (body.vertices.length > maxVertices) {
+        console.error(`❌ 多边形顶点数超出限制: ${body.vertices.length} > ${maxVertices}`);
+        console.error(`   Box2D 旧版最多支持 ${maxVertices} 个顶点的多边形`);
+        return null;
+      }
+      
       shapeDef = new b2PolyDef();
       shapeDef.vertexCount = body.vertices.length;
       
@@ -2558,15 +2677,37 @@ class MapDesigner {
       // 多边形顶点（相对于物体中心）
       // 重要：使用保存的 PPM 参数
       // 注意：旧版 Box2D 需要使用 .Set() 方法设置顶点！
+      // 重要：Y 轴翻转后，顶点顺序会从逆时针变为顺时针，需要反转！
+      const verticesInBox2DOrder = [];
       for (let i = 0; i < body.vertices.length; i++) {
         const v = body.vertices[i];
-        
         const vx = v.x * this.previewPPM;
         const vy = -v.y * this.previewPPM;  // Y 轴翻转（我们的 Y 向上，Box2D 旧版 Y 向下）
-        
-        // 使用 Set() 方法（旧版 API 要求）
-        shapeDef.vertices[i].Set(vx, vy);
-        console.log(`    顶点[${i}]: 局部(${v.x.toFixed(2)}, ${v.y.toFixed(2)}) -> Box2D(${vx.toFixed(2)}, ${vy.toFixed(2)})`);
+        verticesInBox2DOrder.push({ x: vx, y: vy });
+      }
+      
+      // 检查 Y 轴翻转后的顶点顺序
+      let box2dArea = 0;
+      for (let i = 0; i < verticesInBox2DOrder.length; i++) {
+        const j = (i + 1) % verticesInBox2DOrder.length;
+        box2dArea += verticesInBox2DOrder[i].x * verticesInBox2DOrder[j].y;
+        box2dArea -= verticesInBox2DOrder[j].x * verticesInBox2DOrder[i].y;
+      }
+      
+      console.log(`  - Y 轴翻转后的多边形面积: ${box2dArea.toFixed(2)} (正=逆时针, 负=顺时针)`);
+      
+      // Box2D 旧版要求逆时针顺序（在其自己的坐标系中）
+      // 如果面积为负（顺时针），需要反转顶点顺序
+      if (box2dArea < 0) {
+        console.log(`  - 检测到顺时针顺序，反转为逆时针`);
+        verticesInBox2DOrder.reverse();
+      }
+      
+      // 设置顶点
+      for (let i = 0; i < verticesInBox2DOrder.length; i++) {
+        const v = verticesInBox2DOrder[i];
+        shapeDef.vertices[i].Set(v.x, v.y);
+        console.log(`    顶点[${i}]: Box2D(${v.x.toFixed(2)}, ${v.y.toFixed(2)})`);
       }
       
       console.log(`  - 多边形顶点已设置 [使用保存的 PPM=${this.previewPPM}]`);
@@ -2602,6 +2743,15 @@ class MapDesigner {
     
     if (b2Body) {
       console.log(`✅ Body ${body.id} 创建成功`);
+      // 验证物体是否有形状
+      const shapeList = b2Body.GetShapeList();
+      if (shapeList) {
+        console.log(`  - 物体有形状定义: type=${shapeList.m_type}`);
+      } else {
+        console.warn(`  - ⚠️ 警告：物体没有形状定义！`);
+      }
+      // 验证物体类型
+      console.log(`  - 物体类型: ${body.bodyType} (static的质量应该为无穷大)`);
     } else {
       console.error(`❌ Body ${body.id} 创建失败！CreateBody 返回 null`);
       console.error(`  - 详细信息: type=${body.bodyType}, shape=${body.shapeType}`);
