@@ -98,17 +98,17 @@ function box2DToCanvas(box2dX: number, box2dY: number, canvasWidth: number, canv
   const offsetX = box2dX - ORIGIN_OFFSET_X;
   const offsetY = box2dY - ORIGIN_OFFSET_Y;
   
-  // Box2D 坐标转 Canvas 坐标
+  // Box2D 坐标转 Canvas 坐标（Y 向上统一，不翻转）
   return {
     x: canvasWidth / 2 + offsetX * PPM,        // X: 中心偏移
-    y: canvasHeight - offsetY * PPM             // Y: 翻转（Box2D向上 -> Canvas向下）
+    y: canvasHeight / 2 - offsetY * PPM        // Y: 中心偏移（Canvas 向下为正，所以用减法）
   };
 }
 
 function canvasToBox2D(canvasX: number, canvasY: number, canvasWidth: number, canvasHeight: number): Vector2 {
-  // Canvas 坐标转 Box2D 坐标
+  // Canvas 坐标转 Box2D 坐标（Y 向上统一，不翻转）
   const box2dX = (canvasX - canvasWidth / 2) / PPM;
-  const box2dY = (canvasHeight - canvasY) / PPM;
+  const box2dY = (canvasHeight / 2 - canvasY) / PPM;  // Canvas 向下为正，所以用减法
   
   // 应用原点偏移
   return {
@@ -1275,11 +1275,11 @@ class MapDesigner {
     ctx.strokeStyle = '#e0e0e0';
     ctx.lineWidth = 1;
     
-    // 计算可视范围的 Box2D 坐标（考虑原点偏移）
+    // 计算可视范围的 Box2D 坐标（Y 向上为正）
     const worldMinX = ORIGIN_OFFSET_X - (width / 2) / PPM;
     const worldMaxX = ORIGIN_OFFSET_X + (width / 2) / PPM;
-    const worldMinY = ORIGIN_OFFSET_Y;
-    const worldMaxY = ORIGIN_OFFSET_Y + height / PPM;
+    const worldMinY = ORIGIN_OFFSET_Y - (height / 2) / PPM;  // Y 向上，Canvas 下方对应负值
+    const worldMaxY = ORIGIN_OFFSET_Y + (height / 2) / PPM;  // Y 向上，Canvas 上方对应正值
     
     // 绘制垂直网格线
     for (let x = Math.floor(worldMinX / GRID_SIZE) * GRID_SIZE; x <= worldMaxX; x += GRID_SIZE) {
@@ -2334,7 +2334,7 @@ class MapDesigner {
   private exportBox2D(): void {
     const box2dData = {
       world_settings: {
-        gravity: [0, -10],
+        gravity: [0, -9.8],  // 标准重力加速度 9.8 m/s²，Y向下（负值）
         allow_sleeping: true,
         auto_clear_forces: true
       },
@@ -2578,10 +2578,14 @@ class MapDesigner {
     worldAABB.minVertex.Set(-1000, -1000);
     worldAABB.maxVertex.Set(1000, 1000);
     
-    // 创建重力（Y 向下为正，像素单位）
-    // 注意：我们的坐标系 Y 向上，Box2D 旧版 Y 向下
-    const gravity = new b2Vec2(0, 300); // 约 300 pixels/s² 向下
+    // 创建重力（统一使用 Y 向上为正的坐标系）
+    // 标准重力: 9.8 m/s² 向下
+    // Y 向上为正，所以向下是负值
+    const gravityValue = -9.8 * this.previewPPM; // 负值表示向下
+    const gravity = new b2Vec2(0, gravityValue);
     const doSleep = true;
+    
+    console.log(`重力设置: ${gravityValue.toFixed(1)} Box2D单位/s² (= -9.8 m/s² 向下, Y轴向上, PPM=${this.previewPPM})`);
     
     // 创建世界
     this.box2dWorld = new b2World(worldAABB, gravity, doSleep);
@@ -2677,40 +2681,18 @@ class MapDesigner {
       // 多边形顶点（相对于物体中心）
       // 重要：使用保存的 PPM 参数
       // 注意：旧版 Box2D 需要使用 .Set() 方法设置顶点！
-      // 重要：Y 轴翻转后，顶点顺序会从逆时针变为顺时针，需要反转！
-      const verticesInBox2DOrder = [];
+      // 统一使用 Y 向上的坐标系，不翻转
       for (let i = 0; i < body.vertices.length; i++) {
         const v = body.vertices[i];
         const vx = v.x * this.previewPPM;
-        const vy = -v.y * this.previewPPM;  // Y 轴翻转（我们的 Y 向上，Box2D 旧版 Y 向下）
-        verticesInBox2DOrder.push({ x: vx, y: vy });
+        const vy = v.y * this.previewPPM;  // Y 向上，不翻转
+        
+        // 使用 Set() 方法（旧版 API 要求）
+        shapeDef.vertices[i].Set(vx, vy);
+        console.log(`    顶点[${i}]: 局部(${v.x.toFixed(2)}, ${v.y.toFixed(2)}) -> Box2D(${vx.toFixed(2)}, ${vy.toFixed(2)})`);
       }
       
-      // 检查 Y 轴翻转后的顶点顺序
-      let box2dArea = 0;
-      for (let i = 0; i < verticesInBox2DOrder.length; i++) {
-        const j = (i + 1) % verticesInBox2DOrder.length;
-        box2dArea += verticesInBox2DOrder[i].x * verticesInBox2DOrder[j].y;
-        box2dArea -= verticesInBox2DOrder[j].x * verticesInBox2DOrder[i].y;
-      }
-      
-      console.log(`  - Y 轴翻转后的多边形面积: ${box2dArea.toFixed(2)} (正=逆时针, 负=顺时针)`);
-      
-      // Box2D 旧版要求逆时针顺序（在其自己的坐标系中）
-      // 如果面积为负（顺时针），需要反转顶点顺序
-      if (box2dArea < 0) {
-        console.log(`  - 检测到顺时针顺序，反转为逆时针`);
-        verticesInBox2DOrder.reverse();
-      }
-      
-      // 设置顶点
-      for (let i = 0; i < verticesInBox2DOrder.length; i++) {
-        const v = verticesInBox2DOrder[i];
-        shapeDef.vertices[i].Set(v.x, v.y);
-        console.log(`    顶点[${i}]: Box2D(${v.x.toFixed(2)}, ${v.y.toFixed(2)})`);
-      }
-      
-      console.log(`  - 多边形顶点已设置 [使用保存的 PPM=${this.previewPPM}]`);
+      console.log(`  - 多边形顶点已设置 [使用保存的 PPM=${this.previewPPM}, Y向上]`);
     }
     
     if (!shapeDef) {
@@ -2727,15 +2709,15 @@ class MapDesigner {
     // 添加形状到 body 定义（旧版必须先添加形状）
     bodyDef.AddShape(shapeDef);
     
-    // 设置位置（像素单位，Y 轴翻转）
+    // 设置位置（统一使用 Y 向上的坐标系）
     // 重要：使用保存的坐标系参数，确保创建和同步使用相同的参数
     const canvasX = (body.position.x - this.previewOriginOffsetX) * this.previewPPM + this.canvas.width / 2;
-    const canvasY = -(body.position.y - this.previewOriginOffsetY) * this.previewPPM + this.canvas.height / 2;
+    const canvasY = (body.position.y - this.previewOriginOffsetY) * this.previewPPM + this.canvas.height / 2; // Y向上，不翻转
     bodyDef.position.Set(canvasX, canvasY);
-    console.log(`  - 位置: 世界(${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)}) -> 画布(${canvasX.toFixed(0)}, ${canvasY.toFixed(0)}) [使用保存的坐标系]`);
+    console.log(`  - 位置: 世界(${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)}) -> Box2D(${canvasX.toFixed(0)}, ${canvasY.toFixed(0)}) [Y向上]`);
     
-    // 设置旋转（旧版使用 rotation 属性）
-    bodyDef.rotation = -body.angle; // Y 轴翻转导致角度也要反向
+    // 设置旋转（统一使用逆时针为正）
+    bodyDef.rotation = body.angle; // Y向上，角度不反向
     console.log(`  - 角度: ${(body.angle * 180 / Math.PI).toFixed(1)}° -> Box2D ${(bodyDef.rotation * 180 / Math.PI).toFixed(1)}°`);
     
     // 创建刚体
@@ -2811,15 +2793,15 @@ class MapDesigner {
         bodyAObj.angle
       );
       
-      // 将世界坐标转换为画布坐标（像素）
+      // 将世界坐标转换为 Box2D 坐标（Y 向上，不翻转）
       // 重要：使用保存的坐标系参数，确保与物体创建时使用相同的参数
       const anchorCanvasX = (anchorAWorld.x - this.previewOriginOffsetX) * this.previewPPM + this.canvas.width / 2;
-      const anchorCanvasY = -(anchorAWorld.y - this.previewOriginOffsetY) * this.previewPPM + this.canvas.height / 2;
+      const anchorCanvasY = (anchorAWorld.y - this.previewOriginOffsetY) * this.previewPPM + this.canvas.height / 2; // Y 向上，不翻转
       
-      // 设置锚点（旧版使用 anchorPoint，画布坐标）
+      // 设置锚点（旧版使用 anchorPoint）
       jointDef.anchorPoint.Set(anchorCanvasX, anchorCanvasY);
       
-      console.log(`  - 锚点: 局部(${joint.anchorALocal.x.toFixed(2)}, ${joint.anchorALocal.y.toFixed(2)}) -> 世界(${anchorAWorld.x.toFixed(2)}, ${anchorAWorld.y.toFixed(2)}) -> 画布(${anchorCanvasX.toFixed(0)}, ${anchorCanvasY.toFixed(0)}) [使用保存的坐标系]`);      
+      console.log(`  - 锚点: 局部(${joint.anchorALocal.x.toFixed(2)}, ${joint.anchorALocal.y.toFixed(2)}) -> 世界(${anchorAWorld.x.toFixed(2)}, ${anchorAWorld.y.toFixed(2)}) -> Box2D(${anchorCanvasX.toFixed(0)}, ${anchorCanvasY.toFixed(0)}) [Y向上]`);      
       // 角度限制（旧版 API 完全支持！）
       if (joint.enableLimit) {
         jointDef.enableLimit = true;
@@ -2891,7 +2873,7 @@ class MapDesigner {
         const pos = b2Body.m_position;
         const angle = b2Body.m_rotation;
         
-        // 从画布坐标转回世界坐标（像素 -> 米，Y 轴翻转）
+        // 从 Box2D 坐标转回世界坐标（Box2D 单位 -> 米，Y 向上不翻转）
         // 重要：使用保存的坐标系参数，而不是当前的参数
         // 这样即使用户在预览时拖动或缩放视图，Box2D 同步也是正确的
         const canvasX = pos.x;
@@ -2899,11 +2881,11 @@ class MapDesigner {
         
         // 使用保存的坐标系参数进行转换
         const worldX = (canvasX - this.canvas.width / 2) / this.previewPPM + this.previewOriginOffsetX;
-        const worldY = -(canvasY - this.canvas.height / 2) / this.previewPPM + this.previewOriginOffsetY;
+        const worldY = (canvasY - this.canvas.height / 2) / this.previewPPM + this.previewOriginOffsetY; // Y 向上，不翻转
         
         body.position.x = worldX;
         body.position.y = worldY;
-        body.angle = -angle; // Y 轴翻转导致角度反向
+        body.angle = angle; // Y 向上，角度不反向
       }
     }
   }
