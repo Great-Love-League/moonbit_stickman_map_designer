@@ -2,9 +2,22 @@
  * 常量定义
  */
 
+// ==================== 画布和视图设置 ====================
 // 单位转换：20像素 = 1米
 export const PIXEL_TO_METER = 20;
 export const METER_TO_PIXEL = 1 / PIXEL_TO_METER;
+
+// 画布默认尺寸
+export const DEFAULT_CANVAS_WIDTH = 1000;
+export const DEFAULT_CANVAS_HEIGHT = 600;
+
+// 视图控制范围
+export const MIN_CANVAS_WIDTH = 400;
+export const MAX_CANVAS_WIDTH = 2000;
+export const MIN_CANVAS_HEIGHT = 300;
+export const MAX_CANVAS_HEIGHT = 1500;
+export const MIN_PPM = 5;
+export const MAX_PPM = 100;
 
 // 默认世界设置
 export const DEFAULT_WORLD_GRAVITY: [number, number] = [0, -10];
@@ -32,6 +45,70 @@ export const SELECTION_COLOR = '#00ff00';
 export const SELECTION_LINE_WIDTH = 2;
 export const JOINT_ANCHOR_RADIUS = 6;
 export const JOINT_LINE_WIDTH = 2;
+
+// ==================== 形状尺寸限制 ====================
+// 最小尺寸限制（米）
+export const MIN_SHAPE_WIDTH = 0.5;
+export const MIN_SHAPE_HEIGHT = 0.5;
+export const MIN_SHAPE_RADIUS = 0.25;
+export const MIN_SCALE_SIZE = 0.1; // 变换控制缩放时的最小尺寸
+
+// 像素单位的最小尺寸（向后兼容）
+export const MIN_BODY_SIZE = 10;
+export const MIN_CIRCLE_RADIUS = 5;
+export const MIN_POLYGON_VERTICES = 3;
+export const MAX_POLYGON_VERTICES = 8; // Box2D 多边形最大顶点数
+
+// ==================== 交互控制尺寸 ====================
+// 顶点和手柄
+export const VERTEX_RADIUS_NORMAL = 5;          // 普通顶点半径（像素）
+export const VERTEX_RADIUS_HOVER = 8;           // 悬停顶点半径（像素）
+export const VERTEX_SNAP_DISTANCE = 10;         // 顶点捕捉距离（像素）
+
+// 变换控制手柄
+export const TRANSFORM_HANDLE_SIZE = 8;                 // 缩放手柄大小（像素）
+export const TRANSFORM_ROTATE_HANDLE_RADIUS = 6;        // 旋转手柄半径（像素）
+export const TRANSFORM_ROTATE_HANDLE_OFFSET = 30;       // 旋转手柄距包围框偏移（像素）
+export const TRANSFORM_BBOX_LINE_DASH = [5, 5];         // 包围框虚线样式
+
+// 关节锚点
+export const ANCHOR_RADIUS_NORMAL = 5;          // 普通锚点半径（像素）
+export const ANCHOR_RADIUS_SELECTED = 7;        // 选中锚点半径（像素）
+export const VERTEX_CONTROL_RADIUS = 6;         // 顶点编辑控制点半径（像素）
+
+// 删除工具
+export const DELETE_HOVER_RADIUS = 4;           // 删除悬停圆圈半径（像素）
+
+// ==================== 渲染颜色 ====================
+// 基础颜色
+export const COLOR_GRID = '#e0e0e0';
+export const COLOR_GRID_TEXT = '#666';
+export const COLOR_ORIGIN = '#ff0000';
+
+// 选中和高亮
+export const COLOR_SELECTED = '#3498db';        // 蓝色
+export const COLOR_HIGHLIGHT = '#27ae60';       // 绿色
+export const COLOR_VERTEX_EDITING = '#27ae60';
+
+// 绘制状态
+export const COLOR_DRAWING = '#999';
+export const COLOR_DELETE_HOVER = '#e74c3c';    // 红色
+
+// 文字
+export const COLOR_TEXT = '#333';
+export const COLOR_TEXT_DARK = '#2c3e50';
+
+// 关节
+export const COLOR_JOINT = '#f39c12';           // 橙色
+
+// ==================== 渲染线宽 ====================
+export const LINE_WIDTH_GRID = 1;
+export const LINE_WIDTH_ORIGIN = 2;
+export const LINE_WIDTH_SELECTED = 2;
+export const LINE_WIDTH_VERTEX_HIGHLIGHT = 2;
+export const LINE_WIDTH_VERTEX_EDITING = 3;
+export const LINE_WIDTH_DRAWING = 1;
+export const LINE_WIDTH_JOINT = 3;
 
 // 刚体类型颜色
 export const BODY_TYPE_COLORS = {
@@ -92,11 +169,6 @@ export enum InteractionState {
   SELECTING_JOINT_BODY_A = 'selectingJointBodyA',
   SELECTING_JOINT_BODY_B = 'selectingJointBodyB',
 }
-
-// 最小尺寸限制
-export const MIN_BODY_SIZE = 10; // 像素
-export const MIN_CIRCLE_RADIUS = 5; // 像素
-export const MIN_POLYGON_VERTICES = 3;
 
 // 碰撞过滤默认值
 export const DEFAULT_FILTER_CATEGORY_BITS = 1;

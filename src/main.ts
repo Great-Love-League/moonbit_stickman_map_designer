@@ -11,6 +11,47 @@ import {
   MoveObjectCommand,
   ModifyPropertyCommand 
 } from '@core/commands';
+import {
+  // 画布和视图
+  DEFAULT_CANVAS_WIDTH,
+  DEFAULT_CANVAS_HEIGHT,
+  
+  // 形状尺寸
+  MIN_SHAPE_WIDTH,
+  MIN_SHAPE_HEIGHT,
+  MIN_SHAPE_RADIUS,
+  MAX_POLYGON_VERTICES,
+  
+  // 交互尺寸
+  VERTEX_RADIUS_NORMAL,
+  VERTEX_RADIUS_HOVER,
+  ANCHOR_RADIUS_NORMAL,
+  ANCHOR_RADIUS_SELECTED,
+  VERTEX_CONTROL_RADIUS,
+  DELETE_HOVER_RADIUS,
+  JOINT_ANCHOR_RADIUS,
+  
+  // 渲染颜色
+  COLOR_GRID,
+  COLOR_GRID_TEXT,
+  COLOR_ORIGIN,
+  COLOR_SELECTED,
+  COLOR_HIGHLIGHT,
+  COLOR_DRAWING,
+  COLOR_DELETE_HOVER,
+  COLOR_TEXT,
+  COLOR_TEXT_DARK,
+  COLOR_JOINT,
+  
+  // 渲染线宽
+  LINE_WIDTH_GRID,
+  LINE_WIDTH_ORIGIN,
+  LINE_WIDTH_SELECTED,
+  LINE_WIDTH_VERTEX_HIGHLIGHT,
+  LINE_WIDTH_VERTEX_EDITING,
+  LINE_WIDTH_DRAWING,
+  LINE_WIDTH_JOINT,
+} from '@core/constants';
 
 // ==================== 类型定义 ====================
 
@@ -393,24 +434,24 @@ class MapDesigner {
     // 重置视图
     resetBtn?.addEventListener('click', () => {
       // 重置画布大小
-      this.canvas.width = 1000;
-      this.canvas.height = 700;
-      if (canvasWidthSlider) canvasWidthSlider.value = '1000';
-      if (canvasWidthValue) canvasWidthValue.textContent = '1000';
-      if (canvasHeightSlider) canvasHeightSlider.value = '700';
-      if (canvasHeightValue) canvasHeightValue.textContent = '700';
+      this.canvas.width = DEFAULT_CANVAS_WIDTH;
+      this.canvas.height = DEFAULT_CANVAS_HEIGHT;
+      if (canvasWidthSlider) canvasWidthSlider.value = String(DEFAULT_CANVAS_WIDTH);
+      if (canvasWidthValue) canvasWidthValue.textContent = String(DEFAULT_CANVAS_WIDTH);
+      if (canvasHeightSlider) canvasHeightSlider.value = String(DEFAULT_CANVAS_HEIGHT);
+      if (canvasHeightValue) canvasHeightValue.textContent = String(DEFAULT_CANVAS_HEIGHT);
       
       // 重置缩放和原点
       PPM = 20;
       ORIGIN_OFFSET_X = 0;
-      ORIGIN_OFFSET_Y = 0;
+      ORIGIN_OFFSET_Y = (DEFAULT_CANVAS_HEIGHT / 2) / PPM;
       
       if (ppmSlider) ppmSlider.value = '20';
       if (ppmValue) ppmValue.textContent = '20';
       if (originXSlider) originXSlider.value = '0';
       if (originXValue) originXValue.textContent = '0.00';
-      if (originYSlider) originYSlider.value = '0';
-      if (originYValue) originYValue.textContent = '0.00';
+      if (originYSlider) originYSlider.value = String(ORIGIN_OFFSET_Y);
+      if (originYValue) originYValue.textContent = ORIGIN_OFFSET_Y.toFixed(2);
       
       this.render();
       this.updateStatus('视图已重置');
@@ -971,15 +1012,15 @@ class MapDesigner {
     const dy = pos.y - this.dragStartPos.y;
 
     if (this.drawingObject.shapeType === 'box') {
-      // Box2D 坐标，最小 0.5m
-      this.drawingObject.width = Math.max(0.5, Math.abs(dx));
-      this.drawingObject.height = Math.max(0.5, Math.abs(dy));
+      // Box2D 坐标，最小尺寸使用常量
+      this.drawingObject.width = Math.max(MIN_SHAPE_WIDTH, Math.abs(dx));
+      this.drawingObject.height = Math.max(MIN_SHAPE_HEIGHT, Math.abs(dy));
       // 位置是起始点和结束点的中点
       this.drawingObject.position.x = this.dragStartPos.x + dx / 2;
       this.drawingObject.position.y = this.dragStartPos.y + dy / 2;
     } else if (this.drawingObject.shapeType === 'circle') {
-      // Box2D 坐标，最小半径 0.25m
-      this.drawingObject.radius = Math.max(0.25, Math.max(Math.abs(dx), Math.abs(dy)) / 2);
+      // Box2D 坐标，最小半径使用常量
+      this.drawingObject.radius = Math.max(MIN_SHAPE_RADIUS, Math.max(Math.abs(dx), Math.abs(dy)) / 2);
     }
   }
 
@@ -1272,8 +1313,8 @@ class MapDesigner {
     ctx.clearRect(0, 0, width, height);
 
     // 绘制网格（Box2D 坐标系，每格 GRID_SIZE 米）
-    ctx.strokeStyle = '#e0e0e0';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = COLOR_GRID;
+    ctx.lineWidth = LINE_WIDTH_GRID;
     
     // 计算可视范围的 Box2D 坐标（Y 向上为正）
     const worldMinX = ORIGIN_OFFSET_X - (width / 2) / PPM;
@@ -1300,7 +1341,7 @@ class MapDesigner {
     }
 
     // 绘制坐标轴标记（Box2D 坐标，米）
-    ctx.fillStyle = '#666';
+    ctx.fillStyle = COLOR_GRID_TEXT;
     ctx.font = '10px monospace';
     
     // X 轴标记（每 5米）
@@ -1321,15 +1362,15 @@ class MapDesigner {
     
     // 绘制原点标记（红色十字）
     const origin = box2DToCanvas(0, 0, width, height);
-    ctx.strokeStyle = '#ff0000';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = COLOR_ORIGIN;
+    ctx.lineWidth = LINE_WIDTH_ORIGIN;
     ctx.beginPath();
     ctx.moveTo(origin.x - 10, origin.y);
     ctx.lineTo(origin.x + 10, origin.y);
     ctx.moveTo(origin.x, origin.y - 10);
     ctx.lineTo(origin.x, origin.y + 10);
     ctx.stroke();
-    ctx.fillStyle = '#ff0000';
+    ctx.fillStyle = COLOR_ORIGIN;
     ctx.font = '11px monospace';
     ctx.fillText('(0,0)', origin.x + 12, origin.y - 5);
 
@@ -1349,9 +1390,9 @@ class MapDesigner {
 
     // 绘制多边形顶点（Box2D 坐标）
     if (this.polygonVertices.length > 0) {
-      ctx.strokeStyle = '#3498db';
-      ctx.fillStyle = '#3498db';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = COLOR_SELECTED;
+      ctx.fillStyle = COLOR_SELECTED;
+      ctx.lineWidth = LINE_WIDTH_SELECTED;
       
       // 绘制已有的边
       ctx.beginPath();
@@ -1370,20 +1411,20 @@ class MapDesigner {
         
         // 起始点用特殊样式（更大，绿色边框）
         if (index === 0 && this.polygonVertices.length >= 3) {
-          ctx.fillStyle = '#3498db';
-          ctx.strokeStyle = '#27ae60'; // 绿色边框
-          ctx.lineWidth = 3;
-          ctx.arc(canvasPos.x, canvasPos.y, 8, 0, Math.PI * 2);
+          ctx.fillStyle = COLOR_SELECTED;
+          ctx.strokeStyle = COLOR_HIGHLIGHT;
+          ctx.lineWidth = LINE_WIDTH_VERTEX_EDITING;
+          ctx.arc(canvasPos.x, canvasPos.y, VERTEX_RADIUS_HOVER, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
           
           // 绘制提示文字
-          ctx.fillStyle = '#27ae60';
+          ctx.fillStyle = COLOR_HIGHLIGHT;
           ctx.font = 'bold 11px monospace';
           ctx.fillText('点击闭合', canvasPos.x + 12, canvasPos.y - 8);
         } else {
-          ctx.fillStyle = '#3498db';
-          ctx.arc(canvasPos.x, canvasPos.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = COLOR_SELECTED;
+          ctx.arc(canvasPos.x, canvasPos.y, VERTEX_RADIUS_NORMAL, 0, Math.PI * 2);
           ctx.fill();
         }
       });
@@ -1391,8 +1432,8 @@ class MapDesigner {
       // 从最后一个顶点到鼠标位置画虚线
       if (this.polygonVertices.length > 0) {
         ctx.setLineDash([5, 5]);
-        ctx.strokeStyle = '#3498db';
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = COLOR_SELECTED;
+        ctx.lineWidth = LINE_WIDTH_DRAWING;
         ctx.beginPath();
         const lastVertex = this.polygonVertices[this.polygonVertices.length - 1];
         const lastCanvas = box2DToCanvas(lastVertex.x, lastVertex.y, width, height);
@@ -1413,8 +1454,8 @@ class MapDesigner {
           if (distance < 0.5) {
             // 绘制闭合边的预览（虚线）
             ctx.setLineDash([5, 5]);
-            ctx.strokeStyle = '#27ae60';
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = COLOR_HIGHLIGHT;
+            ctx.lineWidth = LINE_WIDTH_VERTEX_HIGHLIGHT;
             ctx.beginPath();
             ctx.moveTo(lastCanvas.x, lastCanvas.y);
             ctx.lineTo(firstCanvas.x, firstCanvas.y);
@@ -1426,11 +1467,11 @@ class MapDesigner {
       
       // 显示顶点数量提示
       if (this.polygonVertices.length > 0) {
-        const maxVertices = 8; // Box2D 物理引擎限制
+        const maxVertices = MAX_POLYGON_VERTICES;
         const text = this.polygonVertices.length >= maxVertices
           ? `顶点: ${this.polygonVertices.length}/${maxVertices} (已达物理引擎限制，双击或点击起始点完成)`
           : `顶点: ${this.polygonVertices.length}/${maxVertices} (至少3个，双击或点击起始点完成)`;
-        ctx.fillStyle = this.polygonVertices.length >= maxVertices ? '#e74c3c' : '#2c3e50';
+        ctx.fillStyle = this.polygonVertices.length >= maxVertices ? COLOR_DELETE_HOVER : COLOR_TEXT_DARK;
         ctx.font = 'bold 12px monospace';
         ctx.fillText(text, 10, height - 10);
       }
@@ -1440,8 +1481,8 @@ class MapDesigner {
     if (this.currentTool !== 'select' && !this.isDragging) {
       const mouseCanvas = box2DToCanvas(this.mousePos.x, this.mousePos.y, width, height);
       
-      ctx.strokeStyle = '#999';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = COLOR_DRAWING;
+      ctx.lineWidth = LINE_WIDTH_DRAWING;
       ctx.setLineDash([3, 3]);
       
       // 垂直线
@@ -1459,13 +1500,13 @@ class MapDesigner {
       ctx.setLineDash([]);
       
       // 鼠标位置标记
-      ctx.fillStyle = '#e74c3c';
+      ctx.fillStyle = COLOR_DELETE_HOVER;
       ctx.beginPath();
-      ctx.arc(mouseCanvas.x, mouseCanvas.y, 4, 0, Math.PI * 2);
+      ctx.arc(mouseCanvas.x, mouseCanvas.y, DELETE_HOVER_RADIUS, 0, Math.PI * 2);
       ctx.fill();
       
       // 显示坐标
-      ctx.fillStyle = '#333';
+      ctx.fillStyle = COLOR_TEXT;
       ctx.font = '11px monospace';
       ctx.fillText(`(${this.mousePos.x.toFixed(2)}m, ${this.mousePos.y.toFixed(2)}m)`, 
                    mouseCanvas.x + 10, mouseCanvas.y - 10);
@@ -1478,8 +1519,8 @@ class MapDesigner {
       
       // 高亮第一个选中的物体
       ctx.save();
-      ctx.strokeStyle = '#f39c12';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = COLOR_JOINT;
+      ctx.lineWidth = LINE_WIDTH_JOINT;
       ctx.setLineDash([5, 5]);
       
       const bodyCenter = box2DToCanvas(this.jointBodyA.position.x, this.jointBodyA.position.y, width, height);
@@ -1498,15 +1539,15 @@ class MapDesigner {
       
       // 绘制第一个锚点
       const anchorA = box2DToCanvas(this.jointAnchorA.x, this.jointAnchorA.y, width, height);
-      ctx.fillStyle = '#f39c12';
+      ctx.fillStyle = COLOR_JOINT;
       ctx.beginPath();
-      ctx.arc(anchorA.x, anchorA.y, 6, 0, Math.PI * 2);
+      ctx.arc(anchorA.x, anchorA.y, JOINT_ANCHOR_RADIUS, 0, Math.PI * 2);
       ctx.fill();
       
       // 从锚点到鼠标位置画虚线
       const mouseCanvas = box2DToCanvas(this.mousePos.x, this.mousePos.y, width, height);
-      ctx.strokeStyle = '#f39c12';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = COLOR_JOINT;
+      ctx.lineWidth = LINE_WIDTH_SELECTED;
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
       ctx.moveTo(anchorA.x, anchorA.y);
@@ -1531,7 +1572,7 @@ class MapDesigner {
     ctx.rotate(-body.angle);  // Box2D 逆时针为正 → Canvas 顺时针为正
 
     ctx.fillStyle = BODY_COLORS[body.bodyType];
-    ctx.strokeStyle = isSelected ? SELECTION_COLOR : '#2c3e50';
+    ctx.strokeStyle = isSelected ? SELECTION_COLOR : COLOR_TEXT_DARK;
     ctx.lineWidth = isSelected ? 3 : 2;
 
     if (body.shapeType === 'box' && body.width && body.height) {
@@ -1578,7 +1619,7 @@ class MapDesigner {
     }
 
     // 绘制中心点
-    ctx.fillStyle = isSelected ? '#fff' : '#2c3e50';
+    ctx.fillStyle = isSelected ? '#fff' : COLOR_TEXT_DARK;
     ctx.beginPath();
     ctx.arc(0, 0, 3, 0, Math.PI * 2);
     ctx.fill();
@@ -1601,11 +1642,11 @@ class MapDesigner {
         
         // 绘制顶点控制点
         ctx.save();
-        ctx.fillStyle = this.draggedVertexIndex === i ? '#e74c3c' : '#3498db';
+        ctx.fillStyle = this.draggedVertexIndex === i ? COLOR_DELETE_HOVER : COLOR_SELECTED;
         ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = LINE_WIDTH_SELECTED;
         ctx.beginPath();
-        ctx.arc(canvasVertex.x, canvasVertex.y, 6, 0, Math.PI * 2);
+        ctx.arc(canvasVertex.x, canvasVertex.y, VERTEX_CONTROL_RADIUS, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         
@@ -1621,7 +1662,7 @@ class MapDesigner {
     
     // 绘制 ID 标签（在Canvas坐标系中）
     if (isSelected) {
-      ctx.fillStyle = '#333';
+      ctx.fillStyle = COLOR_TEXT;
       ctx.font = '10px monospace';
       ctx.fillText(body.id.substring(0, 12) + '...', canvasPos.x + 10, canvasPos.y - 10);
     }
@@ -1669,8 +1710,8 @@ class MapDesigner {
     ctx.stroke();
 
     // 绘制锚点
-    const anchorRadius = isSelected ? 7 : 5;
-    ctx.fillStyle = '#e74c3c'; // 旋转关节使用红色
+    const anchorRadius = isSelected ? ANCHOR_RADIUS_SELECTED : ANCHOR_RADIUS_NORMAL;
+    ctx.fillStyle = COLOR_DELETE_HOVER; // 旋转关节锚点A使用红色
     
     // 检测是否正在拖动某个锚点
     const isDraggingAnchorA = this.draggingAnchor && this.draggingAnchor.joint === joint && this.draggingAnchor.isAnchorA;
@@ -1681,8 +1722,8 @@ class MapDesigner {
     ctx.arc(anchorACanvas.x, anchorACanvas.y, isDraggingAnchorA ? 10 : anchorRadius, 0, Math.PI * 2);
     ctx.fill();
     if (isSelected || isDraggingAnchorA) {
-      ctx.strokeStyle = isDraggingAnchorA ? '#00ff00' : '#fff';
-      ctx.lineWidth = isDraggingAnchorA ? 3 : 2;
+      ctx.strokeStyle = isDraggingAnchorA ? COLOR_HIGHLIGHT : '#fff';
+      ctx.lineWidth = isDraggingAnchorA ? LINE_WIDTH_VERTEX_EDITING : LINE_WIDTH_SELECTED;
       ctx.stroke();
     }
     
@@ -1692,14 +1733,14 @@ class MapDesigner {
     ctx.arc(anchorBCanvas.x, anchorBCanvas.y, isDraggingAnchorB ? 10 : anchorRadius, 0, Math.PI * 2);
     ctx.fill();
     if (isSelected || isDraggingAnchorB) {
-      ctx.strokeStyle = isDraggingAnchorB ? '#00ff00' : '#fff';
-      ctx.lineWidth = isDraggingAnchorB ? 3 : 2;
+      ctx.strokeStyle = isDraggingAnchorB ? COLOR_HIGHLIGHT : '#fff';
+      ctx.lineWidth = isDraggingAnchorB ? LINE_WIDTH_VERTEX_EDITING : LINE_WIDTH_SELECTED;
       ctx.stroke();
     }
     
     // 标签
     if (isSelected) {
-      ctx.fillStyle = '#333';
+      ctx.fillStyle = COLOR_TEXT;
       ctx.font = '10px monospace';
       const midX = (anchorACanvas.x + anchorBCanvas.x) / 2;
       const midY = (anchorACanvas.y + anchorBCanvas.y) / 2;
