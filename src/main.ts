@@ -22,6 +22,14 @@ import {
   MIN_SHAPE_RADIUS,
   MAX_POLYGON_VERTICES,
   
+  // 默认刚体属性
+  DEFAULT_BODY_DENSITY,
+  DEFAULT_BODY_FRICTION,
+  DEFAULT_BODY_RESTITUTION,
+  DEFAULT_BODY_LINEAR_DAMPING,
+  DEFAULT_BODY_ANGULAR_DAMPING,
+  DEFAULT_BODY_GRAVITY_SCALE,
+  
   // 交互尺寸
   VERTEX_RADIUS_NORMAL,
   VERTEX_RADIUS_HOVER,
@@ -3243,7 +3251,24 @@ class MapDesigner {
         }
       }
       
-      this.objects = data;
+      // 加载对象并填充默认值
+      this.objects = data.map((obj: any) => {
+        if (obj.type === 'body') {
+          // 确保 Body 对象有所有必需的属性
+          return {
+            ...obj,
+            linearDamping: obj.linearDamping ?? DEFAULT_BODY_LINEAR_DAMPING,
+            angularDamping: obj.angularDamping ?? DEFAULT_BODY_ANGULAR_DAMPING,
+            gravityScale: obj.gravityScale ?? DEFAULT_BODY_GRAVITY_SCALE,
+            density: obj.density ?? DEFAULT_BODY_DENSITY,
+            friction: obj.friction ?? DEFAULT_BODY_FRICTION,
+            restitution: obj.restitution ?? DEFAULT_BODY_RESTITUTION,
+            fixedRotation: obj.fixedRotation ?? false
+          };
+        }
+        return obj;
+      });
+      
       this.selectedObject = null;
       this.commandHistory = new CommandHistory(); // 清空撤销历史
       this.updateUndoRedoButtons();
