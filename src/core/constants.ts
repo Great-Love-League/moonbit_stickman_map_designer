@@ -67,9 +67,13 @@ export const VERTEX_SNAP_DISTANCE = 10;         // 顶点捕捉距离（像素�
 
 // 变换控制手柄
 export const TRANSFORM_HANDLE_SIZE = 8;                 // 缩放手柄大小（像素）
+export const TRANSFORM_HANDLE_HALF_SIZE = TRANSFORM_HANDLE_SIZE / 2; // 缩放手柄半尺寸
 export const TRANSFORM_ROTATE_HANDLE_RADIUS = 6;        // 旋转手柄半径（像素）
 export const TRANSFORM_ROTATE_HANDLE_OFFSET = 30;       // 旋转手柄距包围框偏移（像素）
 export const TRANSFORM_BBOX_LINE_DASH = [5, 5];         // 包围框虚线样式
+export const TRANSFORM_HANDLE_COLOR = '#ffffff';        // 缩放手柄颜色（白色）
+export const TRANSFORM_HANDLE_STROKE_COLOR = '#3498db'; // 缩放手柄边框颜色（蓝色）
+export const TRANSFORM_ROTATE_HANDLE_COLOR = '#e74c3c'; // 旋转手柄颜色（红色）
 
 // 关节锚点
 export const ANCHOR_RADIUS_NORMAL = 5;          // 普通锚点半径（像素）

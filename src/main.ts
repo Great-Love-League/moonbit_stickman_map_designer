@@ -30,8 +30,13 @@ import {
   VERTEX_CONTROL_RADIUS,
   DELETE_HOVER_RADIUS,
   JOINT_ANCHOR_RADIUS,
+  TRANSFORM_HANDLE_SIZE,
+  TRANSFORM_HANDLE_HALF_SIZE,
   TRANSFORM_ROTATE_HANDLE_RADIUS,
   TRANSFORM_ROTATE_HANDLE_OFFSET,
+  TRANSFORM_HANDLE_COLOR,
+  TRANSFORM_HANDLE_STROKE_COLOR,
+  TRANSFORM_ROTATE_HANDLE_COLOR,
   
   // 渲染颜色
   COLOR_GRID,
@@ -281,6 +286,16 @@ class MapDesigner {
   private isRotating = false;
   private rotateStartAngle = 0;        // 物体初始角度
   private rotateStartMouseAngle = 0;   // 鼠标初始角度（相对于物体中心）
+  
+  // 缩放变换控制
+  private isScaling = false;
+  private scaleHandle: 'tl' | 'tr' | 'br' | 'bl' | 'top' | 'right' | 'bottom' | 'left' | null = null;
+  private scaleStartBodyPos: Vector2 = { x: 0, y: 0 };
+  private scaleStartAngle = 0;  // 缩放开始时的物体角度
+  private scaleStartWidth = 0;
+  private scaleStartHeight = 0;
+  private scaleStartRadius = 0;
+  private scaleStartVertices: Vector2[] = [];
   
   // 物理预览模式
   private isPreviewMode = false;
@@ -664,6 +679,14 @@ class MapDesigner {
       return;
     }
 
+    // 处理缩放
+    if (this.isScaling && this.selectedObject && this.selectedObject.type === 'body') {
+      const body = this.selectedObject as Body;
+      this.handleScaling(body, pos);
+      this.render();
+      return;
+    }
+
     if (this.currentTool === 'select' && this.isDragging && this.selectedObject && this.dragStartPos) {
       const dx = pos.x - this.dragStartPos.x;
       const dy = pos.y - this.dragStartPos.y;
@@ -759,6 +782,80 @@ class MapDesigner {
       }
       
       this.isRotating = false;
+      this.updatePropertyPanel();
+    }
+    
+    // 处理缩放结束
+    if (this.isScaling && this.selectedObject && this.selectedObject.type === 'body') {
+      const body = this.selectedObject as Body;
+      
+      // 记录缩放操作到历史
+      let changed = false;
+      
+      if (body.shapeType === 'box') {
+        changed = Math.abs((body.width || 0) - this.scaleStartWidth) > 0.01 ||
+                  Math.abs((body.height || 0) - this.scaleStartHeight) > 0.01;
+        
+        if (changed) {
+          // 创建复合命令记录宽度、高度和位置的变化
+          const oldWidth = this.scaleStartWidth;
+          const newWidth = body.width;
+          
+          const cmd = new ModifyPropertyCommand(
+            body,
+            'width',
+            oldWidth,
+            newWidth,
+            () => {
+              this.render();
+              this.updatePropertyPanel();
+            }
+          );
+          this.commandHistory.execute(cmd);
+          this.updateUndoRedoButtons();
+        }
+      } else if (body.shapeType === 'circle') {
+        changed = Math.abs((body.radius || 0) - this.scaleStartRadius) > 0.01;
+        
+        if (changed) {
+          const cmd = new ModifyPropertyCommand(
+            body,
+            'radius',
+            this.scaleStartRadius,
+            body.radius,
+            () => {
+              this.render();
+              this.updatePropertyPanel();
+            }
+          );
+          this.commandHistory.execute(cmd);
+          this.updateUndoRedoButtons();
+        }
+      } else if (body.shapeType === 'polygon' && body.vertices) {
+        // 检查顶点是否有变化
+        changed = body.vertices.some((v, i) => 
+          Math.abs(v.x - this.scaleStartVertices[i].x) > 0.01 ||
+          Math.abs(v.y - this.scaleStartVertices[i].y) > 0.01
+        );
+        
+        if (changed) {
+          const cmd = new ModifyPropertyCommand(
+            body,
+            'vertices',
+            this.scaleStartVertices,
+            body.vertices,
+            () => {
+              this.render();
+              this.updatePropertyPanel();
+            }
+          );
+          this.commandHistory.execute(cmd);
+          this.updateUndoRedoButtons();
+        }
+      }
+      
+      this.isScaling = false;
+      this.scaleHandle = null;
       this.updatePropertyPanel();
     }
     
@@ -938,9 +1035,11 @@ class MapDesigner {
   }
 
   private handleSelectMouseDown(pos: Vector2): void {
-    // 检测是否点击了旋转手柄
+    // 检测是否点击了旋转手柄或缩放手柄
     if (this.selectedObject && this.selectedObject.type === 'body' && !this.isEditingVertices) {
       const body = this.selectedObject as Body;
+      
+      // 优先检测旋转手柄
       if (this.hitTestRotateHandle(body, pos.x, pos.y)) {
         // 开始旋转
         this.isRotating = true;
@@ -952,6 +1051,30 @@ class MapDesigner {
         this.rotateStartMouseAngle = Math.atan2(dy, dx);
         
         console.log('开始旋转物体');
+        return;
+      }
+      
+      // 然后检测缩放手柄
+      const scaleHandle = this.hitTestScaleHandle(body, pos.x, pos.y);
+      if (scaleHandle) {
+        // 开始缩放
+        this.isScaling = true;
+        this.scaleHandle = scaleHandle;
+        this.scaleStartBodyPos = { x: body.position.x, y: body.position.y };
+        this.scaleStartAngle = body.angle;  // 记录初始角度
+        
+        // 记录初始尺寸
+        if (body.shapeType === 'box') {
+          this.scaleStartWidth = body.width || 1;
+          this.scaleStartHeight = body.height || 1;
+        } else if (body.shapeType === 'circle') {
+          this.scaleStartRadius = body.radius || 0.5;
+        } else if (body.shapeType === 'polygon' && body.vertices) {
+          // 深拷贝顶点
+          this.scaleStartVertices = body.vertices.map(v => ({ x: v.x, y: v.y }));
+        }
+        
+        console.log(`开始缩放物体，手柄: ${scaleHandle}`);
         return;
       }
     }
@@ -1333,6 +1456,97 @@ class MapDesigner {
     return dist <= handleRadius;
   }
 
+  // 检测是否点击了缩放手柄，返回手柄类型
+  private hitTestScaleHandle(body: Body, x: number, y: number): 'tl' | 'tr' | 'br' | 'bl' | 'top' | 'right' | 'bottom' | 'left' | null {
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    
+    // 计算包围框（世界坐标）
+    let minX = 0, maxX = 0, minY = 0, maxY = 0;
+    
+    if (body.shapeType === 'box' && body.width && body.height) {
+      const halfW = body.width / 2;
+      const halfH = body.height / 2;
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const corners = [
+        { x: -halfW, y: -halfH },
+        { x: halfW, y: -halfH },
+        { x: halfW, y: halfH },
+        { x: -halfW, y: halfH }
+      ];
+      
+      const worldCorners = corners.map(c => ({
+        x: body.position.x + c.x * cos - c.y * sin,
+        y: body.position.y + c.x * sin + c.y * cos
+      }));
+      
+      minX = Math.min(...worldCorners.map(c => c.x));
+      maxX = Math.max(...worldCorners.map(c => c.x));
+      minY = Math.min(...worldCorners.map(c => c.y));
+      maxY = Math.max(...worldCorners.map(c => c.y));
+    } else if (body.shapeType === 'circle' && body.radius) {
+      const r = body.radius;
+      minX = body.position.x - r;
+      maxX = body.position.x + r;
+      minY = body.position.y - r;
+      maxY = body.position.y + r;
+    } else if (body.shapeType === 'polygon' && body.vertices) {
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const worldVertices = body.vertices.map(v => ({
+        x: body.position.x + v.x * cos - v.y * sin,
+        y: body.position.y + v.x * sin + v.y * cos
+      }));
+      
+      minX = Math.min(...worldVertices.map(v => v.x));
+      maxX = Math.max(...worldVertices.map(v => v.x));
+      minY = Math.min(...worldVertices.map(v => v.y));
+      maxY = Math.max(...worldVertices.map(v => v.y));
+    }
+    
+    // 转换到Canvas坐标
+    const topLeft = box2DToCanvas(minX, maxY, width, height);
+    const topRight = box2DToCanvas(maxX, maxY, width, height);
+    const bottomLeft = box2DToCanvas(minX, minY, width, height);
+    const bottomRight = box2DToCanvas(maxX, minY, width, height);
+    const centerX = (topLeft.x + topRight.x) / 2;
+    const centerY = (topLeft.y + bottomLeft.y) / 2;
+    
+    // 转换鼠标位置到Canvas坐标
+    const mouseCanvas = box2DToCanvas(x, y, width, height);
+    
+    // 8个缩放手柄的位置及其类型
+    const handles: Array<{ x: number; y: number; type: 'tl' | 'tr' | 'br' | 'bl' | 'top' | 'right' | 'bottom' | 'left' }> = [
+      { x: topLeft.x, y: topLeft.y, type: 'tl' },
+      { x: centerX, y: topLeft.y, type: 'top' },
+      { x: topRight.x, y: topRight.y, type: 'tr' },
+      { x: topRight.x, y: centerY, type: 'right' },
+      { x: bottomRight.x, y: bottomRight.y, type: 'br' },
+      { x: centerX, y: bottomRight.y, type: 'bottom' },
+      { x: bottomLeft.x, y: bottomLeft.y, type: 'bl' },
+      { x: bottomLeft.x, y: centerY, type: 'left' }
+    ];
+    
+    // 检测点击（带5像素容差）
+    const hitRadius = TRANSFORM_HANDLE_SIZE + 5;
+    
+    for (const handle of handles) {
+      const dist = Math.sqrt(
+        Math.pow(mouseCanvas.x - handle.x, 2) + 
+        Math.pow(mouseCanvas.y - handle.y, 2)
+      );
+      
+      if (dist <= hitRadius) {
+        return handle.type;
+      }
+    }
+    
+    return null;
+  }
+
   // 检测点击的是哪个锚点（x, y 为 Box2D 坐标）
   private hitTestAnchor(x: number, y: number): { joint: Joint; isAnchorA: boolean } | null {
     // 将像素阈值转换为 Box2D 单位（米）
@@ -1414,6 +1628,335 @@ class MapDesigner {
     }
     
     return -1;
+  }
+
+  // 处理缩放操作
+  private handleScaling(body: Body, currentPos: Vector2): void {
+    if (!this.scaleHandle) return;
+    
+    if (body.shapeType === 'box') {
+      this.scaleBox(body, currentPos);
+    } else if (body.shapeType === 'circle') {
+      this.scaleCircle(body, currentPos);
+    } else if (body.shapeType === 'polygon') {
+      this.scalePolygon(body, currentPos);
+    }
+  }
+
+  // 缩放矩形 - 基于固定点的算法
+  private scaleBox(body: Body, currentPos: Vector2): void {
+    if (!body.width || !body.height || !this.scaleHandle) return;
+    
+    const handle = this.scaleHandle;
+    // 使用初始角度（缩放开始时的角度）
+    const cos = Math.cos(this.scaleStartAngle);
+    const sin = Math.sin(this.scaleStartAngle);
+    
+    // 计算初始状态下的四个角点（物体局部坐标）
+    const halfW = this.scaleStartWidth / 2;
+    const halfH = this.scaleStartHeight / 2;
+    
+    // 确定固定点（与拖动手柄相对的点，在物体局部坐标系中）
+    let fixedLocalX = 0;
+    let fixedLocalY = 0;
+    
+    // 确定缩放方向系数
+    let scaleXDirection = 0; // -1: 左侧缩放, +1: 右侧缩放, 0: 不缩放X
+    let scaleYDirection = 0; // -1: 下侧缩放, +1: 上侧缩放, 0: 不缩放Y
+    
+    switch (handle) {
+      case 'tl': // 左上角 -> 固定右下角
+        fixedLocalX = halfW;
+        fixedLocalY = -halfH;
+        scaleXDirection = -1;
+        scaleYDirection = 1;
+        break;
+      case 'tr': // 右上角 -> 固定左下角
+        fixedLocalX = -halfW;
+        fixedLocalY = -halfH;
+        scaleXDirection = 1;
+        scaleYDirection = 1;
+        break;
+      case 'br': // 右下角 -> 固定左上角
+        fixedLocalX = -halfW;
+        fixedLocalY = halfH;
+        scaleXDirection = 1;
+        scaleYDirection = -1;
+        break;
+      case 'bl': // 左下角 -> 固定右上角
+        fixedLocalX = halfW;
+        fixedLocalY = halfH;
+        scaleXDirection = -1;
+        scaleYDirection = -1;
+        break;
+      case 'top': // 上边中点 -> 固定下边
+        fixedLocalX = 0;
+        fixedLocalY = -halfH;
+        scaleXDirection = 0;
+        scaleYDirection = 1;
+        break;
+      case 'bottom': // 下边中点 -> 固定上边
+        fixedLocalX = 0;
+        fixedLocalY = halfH;
+        scaleXDirection = 0;
+        scaleYDirection = -1;
+        break;
+      case 'left': // 左边中点 -> 固定右边
+        fixedLocalX = halfW;
+        fixedLocalY = 0;
+        scaleXDirection = -1;
+        scaleYDirection = 0;
+        break;
+      case 'right': // 右边中点 -> 固定左边
+        fixedLocalX = -halfW;
+        fixedLocalY = 0;
+        scaleXDirection = 1;
+        scaleYDirection = 0;
+        break;
+    }
+    
+    // 计算固定点的世界坐标（基于初始位置和初始角度）
+    const fixedWorldX = this.scaleStartBodyPos.x + fixedLocalX * cos - fixedLocalY * sin;
+    const fixedWorldY = this.scaleStartBodyPos.y + fixedLocalX * sin + fixedLocalY * cos;
+    
+    // 计算鼠标位置相对于固定点的向量（世界坐标）
+    const fixedToMouseX = currentPos.x - fixedWorldX;
+    const fixedToMouseY = currentPos.y - fixedWorldY;
+    
+    // 转换到物体局部坐标系（注意：这里转换的是向量，不是点）
+    const localFixedToMouseX = fixedToMouseX * cos + fixedToMouseY * sin;
+    const localFixedToMouseY = -fixedToMouseX * sin + fixedToMouseY * cos;
+    
+    // 计算新尺寸
+    let newWidth = this.scaleStartWidth;
+    let newHeight = this.scaleStartHeight;
+    
+    if (scaleXDirection !== 0) {
+      // 缩放宽度：固定点到鼠标的距离就是半宽
+      // scaleXDirection 指示了缩放方向
+      const halfWidth = localFixedToMouseX * scaleXDirection;
+      newWidth = Math.max(MIN_SHAPE_WIDTH, halfWidth * 2);
+    }
+    
+    if (scaleYDirection !== 0) {
+      // 缩放高度：固定点到鼠标的距离就是半高
+      // scaleYDirection 指示了缩放方向
+      const halfHeight = localFixedToMouseY * scaleYDirection;
+      newHeight = Math.max(MIN_SHAPE_HEIGHT, halfHeight * 2);
+    }
+    
+    // 更新尺寸
+    body.width = newWidth;
+    body.height = newHeight;
+    
+    // 计算新的中心位置（保持固定点的世界坐标不变）
+    // 固定点在新物体局部坐标系中的位置
+    const newHalfW = newWidth / 2;
+    const newHalfH = newHeight / 2;
+    
+    let newFixedLocalX = 0;
+    let newFixedLocalY = 0;
+    
+    // 根据手柄类型确定固定点在新物体中的局部坐标
+    switch (handle) {
+      case 'tl': // 左上角 -> 固定右下角
+        newFixedLocalX = newHalfW;
+        newFixedLocalY = -newHalfH;
+        break;
+      case 'tr': // 右上角 -> 固定左下角
+        newFixedLocalX = -newHalfW;
+        newFixedLocalY = -newHalfH;
+        break;
+      case 'br': // 右下角 -> 固定左上角
+        newFixedLocalX = -newHalfW;
+        newFixedLocalY = newHalfH;
+        break;
+      case 'bl': // 左下角 -> 固定右上角
+        newFixedLocalX = newHalfW;
+        newFixedLocalY = newHalfH;
+        break;
+      case 'top': // 上边中点 -> 固定下边
+        newFixedLocalX = 0;
+        newFixedLocalY = -newHalfH;
+        break;
+      case 'bottom': // 下边中点 -> 固定上边
+        newFixedLocalX = 0;
+        newFixedLocalY = newHalfH;
+        break;
+      case 'left': // 左边中点 -> 固定右边
+        newFixedLocalX = newHalfW;
+        newFixedLocalY = 0;
+        break;
+      case 'right': // 右边中点 -> 固定左边
+        newFixedLocalX = -newHalfW;
+        newFixedLocalY = 0;
+        break;
+    }
+    
+    // 新的物体中心位置 = 固定点世界坐标 - 固定点局部坐标转到世界坐标
+    body.position.x = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin);
+    body.position.y = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos);
+  }
+
+  // 缩放圆形 - 基于固定中心的算法
+  private scaleCircle(body: Body, currentPos: Vector2): void {
+    if (!body.radius || !this.scaleHandle) return;
+    
+    // 圆形缩放：计算当前鼠标位置到圆心的距离作为新半径
+    const dx = currentPos.x - this.scaleStartBodyPos.x;
+    const dy = currentPos.y - this.scaleStartBodyPos.y;
+    const distanceToCenter = Math.sqrt(dx * dx + dy * dy);
+    
+    // 应用半径变化
+    const newRadius = Math.max(MIN_SHAPE_RADIUS, distanceToCenter);
+    body.radius = newRadius;
+    
+    // 圆形不需要改变位置
+  }
+
+  // 缩放多边形 - 基于固定点的算法
+  private scalePolygon(body: Body, currentPos: Vector2): void {
+    if (!body.vertices || this.scaleStartVertices.length === 0 || !this.scaleHandle) return;
+    
+    const handle = this.scaleHandle;
+    // 使用初始角度（缩放开始时的角度）
+    const cos = Math.cos(this.scaleStartAngle);
+    const sin = Math.sin(this.scaleStartAngle);
+    
+    // 计算初始包围框（局部坐标）
+    const minX = Math.min(...this.scaleStartVertices.map(v => v.x));
+    const maxX = Math.max(...this.scaleStartVertices.map(v => v.x));
+    const minY = Math.min(...this.scaleStartVertices.map(v => v.y));
+    const maxY = Math.max(...this.scaleStartVertices.map(v => v.y));
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const startWidth = maxX - minX;
+    const startHeight = maxY - minY;
+    
+    // 确定固定点（局部坐标）
+    let fixedLocalX = 0;
+    let fixedLocalY = 0;
+    let scaleXDirection = 0;
+    let scaleYDirection = 0;
+    
+    switch (handle) {
+      case 'tl':
+        fixedLocalX = maxX;
+        fixedLocalY = minY;
+        scaleXDirection = -1;
+        scaleYDirection = 1;
+        break;
+      case 'tr':
+        fixedLocalX = minX;
+        fixedLocalY = minY;
+        scaleXDirection = 1;
+        scaleYDirection = 1;
+        break;
+      case 'br':
+        fixedLocalX = minX;
+        fixedLocalY = maxY;
+        scaleXDirection = 1;
+        scaleYDirection = -1;
+        break;
+      case 'bl':
+        fixedLocalX = maxX;
+        fixedLocalY = maxY;
+        scaleXDirection = -1;
+        scaleYDirection = -1;
+        break;
+      case 'top':
+        fixedLocalX = centerX;
+        fixedLocalY = minY;
+        scaleXDirection = 0;
+        scaleYDirection = 1;
+        break;
+      case 'bottom':
+        fixedLocalX = centerX;
+        fixedLocalY = maxY;
+        scaleXDirection = 0;
+        scaleYDirection = -1;
+        break;
+      case 'left':
+        fixedLocalX = maxX;
+        fixedLocalY = centerY;
+        scaleXDirection = -1;
+        scaleYDirection = 0;
+        break;
+      case 'right':
+        fixedLocalX = minX;
+        fixedLocalY = centerY;
+        scaleXDirection = 1;
+        scaleYDirection = 0;
+        break;
+    }
+    
+    // 计算固定点的世界坐标
+    const fixedWorldX = this.scaleStartBodyPos.x + fixedLocalX * cos - fixedLocalY * sin;
+    const fixedWorldY = this.scaleStartBodyPos.y + fixedLocalX * sin + fixedLocalY * cos;
+    
+    // 计算鼠标相对固定点的向量（世界坐标）
+    const fixedToMouseX = currentPos.x - fixedWorldX;
+    const fixedToMouseY = currentPos.y - fixedWorldY;
+    
+    // 转换到局部坐标系
+    const localFixedToMouseX = fixedToMouseX * cos + fixedToMouseY * sin;
+    const localFixedToMouseY = -fixedToMouseX * sin + fixedToMouseY * cos;
+    
+    // 计算缩放因子
+    let scaleX = 1;
+    let scaleY = 1;
+    
+    if (scaleXDirection !== 0 && startWidth > 0) {
+      // 计算新宽度：固定点到鼠标的距离 * 方向 * 2（因为从中心到边缘）
+      const halfWidth = localFixedToMouseX * scaleXDirection;
+      const newWidth = Math.max(0.1, halfWidth * 2);
+      scaleX = newWidth / startWidth;
+    }
+    
+    if (scaleYDirection !== 0 && startHeight > 0) {
+      // 计算新高度：固定点到鼠标的距离 * 方向 * 2
+      const halfHeight = localFixedToMouseY * scaleYDirection;
+      const newHeight = Math.max(0.1, halfHeight * 2);
+      scaleY = newHeight / startHeight;
+    }
+    
+    // 应用缩放到所有顶点（相对于固定点）
+    body.vertices = this.scaleStartVertices.map(v => {
+      // 计算顶点相对于固定点的位置
+      const relativeX = v.x - fixedLocalX;
+      const relativeY = v.y - fixedLocalY;
+      
+      // 应用缩放
+      const scaledRelativeX = relativeX * scaleX;
+      const scaledRelativeY = relativeY * scaleY;
+      
+      // 转换回相对于物体中心的坐标
+      return {
+        x: fixedLocalX + scaledRelativeX,
+        y: fixedLocalY + scaledRelativeY
+      };
+    });
+    
+    // 计算新的包围框中心
+    const newMinX = Math.min(...body.vertices.map(v => v.x));
+    const newMaxX = Math.max(...body.vertices.map(v => v.x));
+    const newMinY = Math.min(...body.vertices.map(v => v.y));
+    const newMaxY = Math.max(...body.vertices.map(v => v.y));
+    const newCenterX = (newMinX + newMaxX) / 2;
+    const newCenterY = (newMinY + newMaxY) / 2;
+    
+    // 调整所有顶点，使物体中心回到原点
+    const offsetX = newCenterX;
+    const offsetY = newCenterY;
+    
+    body.vertices = body.vertices.map(v => ({
+      x: v.x - offsetX,
+      y: v.y - offsetY
+    }));
+    
+    // 更新物体位置（补偿中心偏移）
+    body.position.x = this.scaleStartBodyPos.x + offsetX * cos - offsetY * sin;
+    body.position.y = this.scaleStartBodyPos.y + offsetX * sin + offsetY * cos;
   }
 
   private deleteSelected(): void {
@@ -1687,9 +2230,10 @@ class MapDesigner {
       ctx.restore();
     }
     
-    // 绘制旋转手柄（选中物体且为Body类型时）
+    // 绘制旋转手柄和缩放手柄（选中物体且为Body类型时）
     if (this.selectedObject && this.selectedObject.type === 'body' && !this.isEditingVertices) {
       this.renderRotateHandle(this.selectedObject as Body);
+      this.renderScaleHandles(this.selectedObject as Body);
     }
   }
 
@@ -1777,7 +2321,7 @@ class MapDesigner {
     ctx.stroke();
     
     // 绘制旋转手柄（红色圆圈）
-    ctx.fillStyle = COLOR_DELETE_HOVER; // 使用红色
+    ctx.fillStyle = TRANSFORM_ROTATE_HANDLE_COLOR;
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1797,6 +2341,103 @@ class MapDesigner {
     ctx.lineTo(boxCenterX - 1, handleY - 3.5);
     ctx.lineTo(boxCenterX - 2.5, handleY - 2.5);
     ctx.fill();
+    
+    ctx.restore();
+  }
+
+  // 渲染缩放手柄（8个方向）
+  private renderScaleHandles(body: Body): void {
+    const ctx = this.ctx;
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    
+    // 计算物体的包围框（世界坐标）
+    let minX = 0, maxX = 0, minY = 0, maxY = 0;
+    
+    if (body.shapeType === 'box' && body.width && body.height) {
+      const halfW = body.width / 2;
+      const halfH = body.height / 2;
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const corners = [
+        { x: -halfW, y: -halfH },
+        { x: halfW, y: -halfH },
+        { x: halfW, y: halfH },
+        { x: -halfW, y: halfH }
+      ];
+      
+      const worldCorners = corners.map(c => ({
+        x: body.position.x + c.x * cos - c.y * sin,
+        y: body.position.y + c.x * sin + c.y * cos
+      }));
+      
+      minX = Math.min(...worldCorners.map(c => c.x));
+      maxX = Math.max(...worldCorners.map(c => c.x));
+      minY = Math.min(...worldCorners.map(c => c.y));
+      maxY = Math.max(...worldCorners.map(c => c.y));
+    } else if (body.shapeType === 'circle' && body.radius) {
+      const r = body.radius;
+      minX = body.position.x - r;
+      maxX = body.position.x + r;
+      minY = body.position.y - r;
+      maxY = body.position.y + r;
+    } else if (body.shapeType === 'polygon' && body.vertices) {
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const worldVertices = body.vertices.map(v => ({
+        x: body.position.x + v.x * cos - v.y * sin,
+        y: body.position.y + v.x * sin + v.y * cos
+      }));
+      
+      minX = Math.min(...worldVertices.map(v => v.x));
+      maxX = Math.max(...worldVertices.map(v => v.x));
+      minY = Math.min(...worldVertices.map(v => v.y));
+      maxY = Math.max(...worldVertices.map(v => v.y));
+    }
+    
+    // 转换到Canvas坐标
+    const topLeft = box2DToCanvas(minX, maxY, width, height);
+    const topRight = box2DToCanvas(maxX, maxY, width, height);
+    const bottomLeft = box2DToCanvas(minX, minY, width, height);
+    const bottomRight = box2DToCanvas(maxX, minY, width, height);
+    const centerX = (topLeft.x + topRight.x) / 2;
+    const centerY = (topLeft.y + bottomLeft.y) / 2;
+    
+    // 8个缩放手柄的位置
+    const handles = [
+      { x: topLeft.x, y: topLeft.y, type: 'tl' },           // 左上
+      { x: centerX, y: topLeft.y, type: 'top' },            // 上中
+      { x: topRight.x, y: topRight.y, type: 'tr' },         // 右上
+      { x: topRight.x, y: centerY, type: 'right' },         // 右中
+      { x: bottomRight.x, y: bottomRight.y, type: 'br' },   // 右下
+      { x: centerX, y: bottomRight.y, type: 'bottom' },     // 下中
+      { x: bottomLeft.x, y: bottomLeft.y, type: 'bl' },     // 左下
+      { x: bottomLeft.x, y: centerY, type: 'left' }         // 左中
+    ];
+    
+    ctx.save();
+    
+    // 绘制所有手柄
+    handles.forEach(handle => {
+      ctx.fillStyle = TRANSFORM_HANDLE_COLOR;
+      ctx.strokeStyle = TRANSFORM_HANDLE_STROKE_COLOR;
+      ctx.lineWidth = 2;
+      
+      ctx.fillRect(
+        handle.x - TRANSFORM_HANDLE_HALF_SIZE,
+        handle.y - TRANSFORM_HANDLE_HALF_SIZE,
+        TRANSFORM_HANDLE_SIZE,
+        TRANSFORM_HANDLE_SIZE
+      );
+      ctx.strokeRect(
+        handle.x - TRANSFORM_HANDLE_HALF_SIZE,
+        handle.y - TRANSFORM_HANDLE_HALF_SIZE,
+        TRANSFORM_HANDLE_SIZE,
+        TRANSFORM_HANDLE_SIZE
+      );
+    });
     
     ctx.restore();
   }
