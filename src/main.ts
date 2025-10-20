@@ -30,6 +30,8 @@ import {
   VERTEX_CONTROL_RADIUS,
   DELETE_HOVER_RADIUS,
   JOINT_ANCHOR_RADIUS,
+  TRANSFORM_ROTATE_HANDLE_RADIUS,
+  TRANSFORM_ROTATE_HANDLE_OFFSET,
   
   // 渲染颜色
   COLOR_GRID,
@@ -274,6 +276,11 @@ class MapDesigner {
   private editingBody: Body | null = null;
   private draggedVertexIndex: number = -1;
   private vertexDragStart: Vector2 | null = null;
+  
+  // 旋转变换控制
+  private isRotating = false;
+  private rotateStartAngle = 0;        // 物体初始角度
+  private rotateStartMouseAngle = 0;   // 鼠标初始角度（相对于物体中心）
   
   // 物理预览模式
   private isPreviewMode = false;
@@ -638,6 +645,25 @@ class MapDesigner {
       return;
     }
 
+    // 旋转物体
+    if (this.isRotating && this.selectedObject && this.selectedObject.type === 'body') {
+      const body = this.selectedObject as Body;
+      
+      // 计算当前鼠标相对于物体中心的角度
+      const dx = pos.x - body.position.x;
+      const dy = pos.y - body.position.y;
+      const currentMouseAngle = Math.atan2(dy, dx);
+      
+      // 计算角度差
+      const angleDelta = currentMouseAngle - this.rotateStartMouseAngle;
+      
+      // 更新物体角度
+      body.angle = this.rotateStartAngle + angleDelta;
+      
+      this.render();
+      return;
+    }
+
     if (this.currentTool === 'select' && this.isDragging && this.selectedObject && this.dragStartPos) {
       const dx = pos.x - this.dragStartPos.x;
       const dy = pos.y - this.dragStartPos.y;
@@ -708,6 +734,32 @@ class MapDesigner {
       this.draggingAnchor = null;
       this.anchorStartPos = null;
       this.updatePropertyPanel(); // 更新属性面板显示新位置
+    }
+    
+    // 处理旋转结束
+    if (this.isRotating && this.selectedObject && this.selectedObject.type === 'body') {
+      const body = this.selectedObject as Body;
+      const oldAngle = this.rotateStartAngle;
+      const newAngle = body.angle;
+      
+      // 只有真正旋转了才记录命令（误差容忍0.01弧度，约0.57度）
+      if (Math.abs(newAngle - oldAngle) > 0.01) {
+        const cmd = new ModifyPropertyCommand(
+          body,
+          'angle',
+          oldAngle,
+          newAngle,
+          () => {
+            this.render();
+            this.updatePropertyPanel();
+          }
+        );
+        this.commandHistory.execute(cmd);
+        this.updateUndoRedoButtons();
+      }
+      
+      this.isRotating = false;
+      this.updatePropertyPanel();
     }
     
     // 处理顶点拖动结束
@@ -886,6 +938,24 @@ class MapDesigner {
   }
 
   private handleSelectMouseDown(pos: Vector2): void {
+    // 检测是否点击了旋转手柄
+    if (this.selectedObject && this.selectedObject.type === 'body' && !this.isEditingVertices) {
+      const body = this.selectedObject as Body;
+      if (this.hitTestRotateHandle(body, pos.x, pos.y)) {
+        // 开始旋转
+        this.isRotating = true;
+        this.rotateStartAngle = body.angle;
+        
+        // 计算鼠标相对于物体中心的初始角度
+        const dx = pos.x - body.position.x;
+        const dy = pos.y - body.position.y;
+        this.rotateStartMouseAngle = Math.atan2(dy, dx);
+        
+        console.log('开始旋转物体');
+        return;
+      }
+    }
+    
     // 顶点编辑模式：尝试选中顶点
     if (this.isEditingVertices && this.editingBody) {
       const vertexIndex = this.hitTestVertex(this.editingBody, pos.x, pos.y);
@@ -1201,6 +1271,66 @@ class MapDesigner {
       }
     }
     return null;
+  }
+
+  // 检测是否点击了旋转手柄
+  private hitTestRotateHandle(body: Body, x: number, y: number): boolean {
+    // 计算包围框
+    let minX = 0, maxX = 0, maxY = 0;
+    
+    if (body.shapeType === 'box' && body.width && body.height) {
+      const halfW = body.width / 2;
+      const halfH = body.height / 2;
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const corners = [
+        { x: -halfW, y: -halfH },
+        { x: halfW, y: -halfH },
+        { x: halfW, y: halfH },
+        { x: -halfW, y: halfH }
+      ];
+      
+      const worldCorners = corners.map(c => ({
+        x: body.position.x + c.x * cos - c.y * sin,
+        y: body.position.y + c.x * sin + c.y * cos
+      }));
+      
+      minX = Math.min(...worldCorners.map(c => c.x));
+      maxX = Math.max(...worldCorners.map(c => c.x));
+      maxY = Math.max(...worldCorners.map(c => c.y));
+    } else if (body.shapeType === 'circle' && body.radius) {
+      const r = body.radius;
+      minX = body.position.x - r;
+      maxX = body.position.x + r;
+      maxY = body.position.y + r;
+    } else if (body.shapeType === 'polygon' && body.vertices) {
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const worldVertices = body.vertices.map(v => ({
+        x: body.position.x + v.x * cos - v.y * sin,
+        y: body.position.y + v.x * sin + v.y * cos
+      }));
+      
+      minX = Math.min(...worldVertices.map(v => v.x));
+      maxX = Math.max(...worldVertices.map(v => v.x));
+      maxY = Math.max(...worldVertices.map(v => v.y));
+    }
+    
+    // 计算旋转手柄位置（Box2D坐标）
+    const boxCenterX = (minX + maxX) / 2;
+    const boxTop = maxY;  // Y向上，顶部是最大值
+    const handleY = boxTop + TRANSFORM_ROTATE_HANDLE_OFFSET / PPM;  // 转换像素到米
+    
+    // 检测点击（Box2D坐标）
+    const handleRadius = (TRANSFORM_ROTATE_HANDLE_RADIUS + 5) / PPM;  // +5像素容差
+    const dist = Math.sqrt(
+      Math.pow(x - boxCenterX, 2) + 
+      Math.pow(y - handleY, 2)
+    );
+    
+    return dist <= handleRadius;
   }
 
   // 检测点击的是哪个锚点（x, y 为 Box2D 坐标）
@@ -1556,6 +1686,119 @@ class MapDesigner {
       
       ctx.restore();
     }
+    
+    // 绘制旋转手柄（选中物体且为Body类型时）
+    if (this.selectedObject && this.selectedObject.type === 'body' && !this.isEditingVertices) {
+      this.renderRotateHandle(this.selectedObject as Body);
+    }
+  }
+
+  // 渲染旋转手柄
+  private renderRotateHandle(body: Body): void {
+    const ctx = this.ctx;
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    
+    // 计算物体的包围框（世界坐标）
+    let minX = 0, maxX = 0, minY = 0, maxY = 0;
+    
+    if (body.shapeType === 'box' && body.width && body.height) {
+      const halfW = body.width / 2;
+      const halfH = body.height / 2;
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      // 计算四个角点的世界坐标
+      const corners = [
+        { x: -halfW, y: -halfH },
+        { x: halfW, y: -halfH },
+        { x: halfW, y: halfH },
+        { x: -halfW, y: halfH }
+      ];
+      
+      const worldCorners = corners.map(c => ({
+        x: body.position.x + c.x * cos - c.y * sin,
+        y: body.position.y + c.x * sin + c.y * cos
+      }));
+      
+      minX = Math.min(...worldCorners.map(c => c.x));
+      maxX = Math.max(...worldCorners.map(c => c.x));
+      minY = Math.min(...worldCorners.map(c => c.y));
+      maxY = Math.max(...worldCorners.map(c => c.y));
+    } else if (body.shapeType === 'circle' && body.radius) {
+      const r = body.radius;
+      minX = body.position.x - r;
+      maxX = body.position.x + r;
+      minY = body.position.y - r;
+      maxY = body.position.y + r;
+    } else if (body.shapeType === 'polygon' && body.vertices) {
+      const cos = Math.cos(body.angle);
+      const sin = Math.sin(body.angle);
+      
+      const worldVertices = body.vertices.map(v => ({
+        x: body.position.x + v.x * cos - v.y * sin,
+        y: body.position.y + v.x * sin + v.y * cos
+      }));
+      
+      minX = Math.min(...worldVertices.map(v => v.x));
+      maxX = Math.max(...worldVertices.map(v => v.x));
+      minY = Math.min(...worldVertices.map(v => v.y));
+      maxY = Math.max(...worldVertices.map(v => v.y));
+    }
+    
+    // 转换到Canvas坐标
+    const topLeft = box2DToCanvas(minX, maxY, width, height);
+    const bottomRight = box2DToCanvas(maxX, minY, width, height);
+    
+    // 绘制包围框（虚线）
+    ctx.save();
+    ctx.strokeStyle = COLOR_SELECTED;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    ctx.strokeRect(
+      topLeft.x,
+      topLeft.y,
+      bottomRight.x - topLeft.x,
+      bottomRight.y - topLeft.y
+    );
+    ctx.setLineDash([]);
+    
+    // 计算旋转手柄位置（在包围框顶部中心上方）
+    const boxCenterX = (topLeft.x + bottomRight.x) / 2;
+    const boxTop = topLeft.y;
+    const handleY = boxTop - TRANSFORM_ROTATE_HANDLE_OFFSET;
+    
+    // 绘制连接线
+    ctx.strokeStyle = COLOR_SELECTED;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(boxCenterX, boxTop);
+    ctx.lineTo(boxCenterX, handleY);
+    ctx.stroke();
+    
+    // 绘制旋转手柄（红色圆圈）
+    ctx.fillStyle = COLOR_DELETE_HOVER; // 使用红色
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(boxCenterX, handleY, TRANSFORM_ROTATE_HANDLE_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    
+    // 绘制旋转图标（简单的箭头）
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(boxCenterX, handleY, 3, 0.2, Math.PI * 1.8);
+    ctx.stroke();
+    // 箭头
+    ctx.beginPath();
+    ctx.moveTo(boxCenterX - 2.5, handleY - 2);
+    ctx.lineTo(boxCenterX - 1, handleY - 3.5);
+    ctx.lineTo(boxCenterX - 2.5, handleY - 2.5);
+    ctx.fill();
+    
+    ctx.restore();
   }
 
   private renderBody(body: Body): void {
